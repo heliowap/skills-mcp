@@ -1,0 +1,26 @@
+{
+  "name": "skills-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "start": "bun src/index.ts",
+    "budget": "bun scripts/budget.ts",
+    "coverage": "bun scripts/coverage.ts",
+    "eval": "bun scripts/eval.ts",
+    "migrate": "bun scripts/opencode-migrate.ts",
+    "verify:all": "bun run typecheck && bun test && bun run budget"
+  },
+  "dependencies": {
+    "@ai-sdk/typesafe-ai": "3.0.34",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "ai": "7.0.163",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

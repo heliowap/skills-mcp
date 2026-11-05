@@ -1,0 +1,8 @@
+node_modules/
+.cache/
+*.log
+.DS_Store
+# local test temp dirs
+tmp/
+.tmp/
+test/**/.tmp/
