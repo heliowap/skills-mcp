@@ -50,6 +50,10 @@ _Avoid_: Remote, repo source
 A source that is a directory on the user's machine.
 _Avoid_: Folder source, path source
 
+**Trusted source**:
+A source the user controls, whose skill directories may link to places outside it; local sources are trusted, GitHub and command sources are not.
+_Avoid_: Safe source, private source
+
 **Command source**:
 A source whose skills are printed by a CLI that embeds them.
 _Avoid_: CLI source, binary source
