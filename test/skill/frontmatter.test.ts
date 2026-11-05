@@ -60,4 +60,25 @@ describe("parseFrontmatter", () => {
       expect(parsed.meta.tags).toEqual(["a", "b"]);
     }
   });
+
+  test("when strict YAML fails, reads top-level lines and flags the result as lenient", () => {
+    const parsed = parseFrontmatter("---\nname: essay-writer\ndescription: Use when: drafting reports.\ntags: [unclosed\n---\nBody\n");
+
+    expect(parsed).toEqual({
+      ok: true,
+      meta: { name: "essay-writer", description: "Use when: drafting reports.", tags: "[unclosed" },
+      body: "Body\n",
+      lenient: true,
+    });
+  });
+
+  test("the lenient reader removes one pair of surrounding quotes", () => {
+    const parsed = parseFrontmatter("---\nname: \"essay-writer\"\ndescription: 'Use when: drafting.'\ntags: [unclosed\n---\nBody\n");
+
+    expect(parsed.ok && parsed.meta).toMatchObject({ name: "essay-writer", description: "Use when: drafting." });
+  });
+
+  test("the lenient reader needs both name and description", () => {
+    expect(parseFrontmatter("---\nname: only: name\ntags: [unclosed\n---\nBody\n").ok).toBe(false);
+  });
 });

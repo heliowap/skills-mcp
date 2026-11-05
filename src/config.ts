@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import type { SourceSpec } from "./types";
 import { configPath } from "./paths";
+import { messageOf } from "./text";
 
 /** Invalid or unreadable config. The message names the file and the offending field. */
 export class ConfigError extends Error {
@@ -12,7 +13,8 @@ export class ConfigError extends Error {
   }
 }
 
-const ThresholdsSchema = z.object({
+/** Per-model confidence thresholds; each defaults to the documented value. */
+export const ThresholdsSchema = z.object({
   action: z.number().min(0).max(1).default(0.3),
   named: z.number().min(0).max(1).default(0.5),
   fits: z.number().min(0).max(1).default(0.3),
@@ -65,13 +67,13 @@ export async function loadConfig(): Promise<Config> {
     text = await readFile(path, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return ConfigSchema.parse({});
-    throw new ConfigError(`cannot read config ${path}: ${(err as Error).message}`);
+    throw new ConfigError(`cannot read config ${path}: ${messageOf(err)}`);
   }
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch (err) {
-    throw new ConfigError(`config ${path} is not valid JSON: ${(err as Error).message}`);
+    throw new ConfigError(`config ${path} is not valid JSON: ${messageOf(err)}`);
   }
   return validate(path, raw);
 }

@@ -7,8 +7,26 @@ export const MAX_INLINE_CHARS = 200;
 const MAX_INPUT_CHARS = 8192;
 
 const ELLIPSIS = "…";
-// Same tag rule as src/skill/validate.ts: opening or closing XML-like tags and HTML comments.
+// Opening or closing XML-like tags and HTML comments: the one tag rule for untrusted text.
 const TAG_PATTERN = /<\/?[A-Za-z][A-Za-z0-9_:.-]*(?:\s[^<>]*)?\/?>|<!--[\s\S]*?-->/g;
+
+/** Control and invisible format characters removed; whitespace controls become spaces. */
+export function stripControls(text: string): string {
+  return text
+    .replace(/\p{Cc}/gu, (c) => (/\s/u.test(c) ? " " : ""))
+    .replace(/\p{Cf}/gu, (c) => (c === "\u200c" || c === "\u200d" ? c : ""));
+}
+
+/** Tags and comments removed until none remain, so a split tag cannot survive one pass. */
+export function stripTags(text: string): string {
+  let value = text;
+  let previous: string;
+  do {
+    previous = value;
+    value = value.replace(TAG_PATTERN, "");
+  } while (value !== previous);
+  return value;
+}
 
 /**
  * Makes untrusted text fit for one line of a message: control and invisible format characters
@@ -17,16 +35,7 @@ const TAG_PATTERN = /<\/?[A-Za-z][A-Za-z0-9_:.-]*(?:\s[^<>]*)?\/?>|<!--[\s\S]*?-
  */
 export function sanitizeInline(text: string, maxChars: number = MAX_INLINE_CHARS): string {
   const limit = Math.max(1, Math.floor(maxChars));
-  let value = text
-    .slice(0, MAX_INPUT_CHARS)
-    .replace(/\p{Cc}/gu, (c) => (/\s/u.test(c) ? " " : ""))
-    .replace(/\p{Cf}/gu, (c) => (c === "\u200c" || c === "\u200d" ? c : ""));
-
-  let previous: string;
-  do {
-    previous = value;
-    value = value.replace(TAG_PATTERN, "");
-  } while (value !== previous);
+  let value = stripTags(stripControls(text.slice(0, MAX_INPUT_CHARS)));
 
   value = value.replace(/\s+/g, " ").trim();
   if (value.length <= limit) return value;

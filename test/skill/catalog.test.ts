@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CatalogError, buildCatalog } from "../../src/catalog";
+import { MAX_SCAN_ENTRIES } from "../../src/skill/validate";
 import type { MaterializedSource } from "../../src/types";
 
 const REPOS = join(import.meta.dir, "..", "fixtures", "repos");
 const repo = (name: string) => join(REPOS, name);
+const isRoot = () => typeof process.getuid === "function" && process.getuid() === 0;
 
 const made: string[] = [];
 afterEach(async () => {
@@ -142,6 +144,18 @@ describe("buildCatalog: real repository layouts", () => {
     expect(catalog.get("readme")?.name).toBe("alpha-readme");
     expect(warned(warnings, "b/readme", 'skill id "readme"')).toBe(true);
   });
+
+  test("distinct skills that share a frontmatter name are both kept, keyed by their ids", async () => {
+    const base = await tree({
+      "skills/alpha/SKILL.md": skillMd("shared", "First skill."),
+      "skills/beta/SKILL.md": skillMd("shared", "Second skill."),
+    });
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.get("alpha")?.description).toBe("First skill.");
+    expect(catalog.get("beta")?.description).toBe("Second skill.");
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe("buildCatalog: collisions across sources", () => {
@@ -154,6 +168,15 @@ describe("buildCatalog: collisions across sources", () => {
     expect(catalog.get("pdf")?.sourceId).toBe("first");
     expect(catalog.all().filter((r) => r.id === "pdf")).toHaveLength(1);
     expect(catalog.shadowed()).toContainEqual({ id: "pdf", sourceId: "second", by: "first" });
+  });
+
+  test("a skill shadowed by an earlier source is also reported as a warning", async () => {
+    const { warnings } = await buildCatalog([
+      source("first", [repo("anthropics")]),
+      source("second", [repo("anthropics")]),
+    ]);
+
+    expect(warned(warnings, "second", "pdf", "first")).toBe(true);
   });
 
   test("a source-order winner is not replaced by a later source's shallower copy", async () => {
@@ -194,6 +217,24 @@ describe("buildCatalog: validation and sanitizing", () => {
 
     expect(catalog.all().map((r) => r.id)).not.toContain("Bad_Name");
     expect(warned(warnings, "Bad_Name")).toBe(true);
+  });
+
+  test("markup in directory names and link names is stripped from every warning", async () => {
+    const base = await tree({ "Evil<img>/SKILL.md": skillMd("evil", "Bad id."), "keep/SKILL.md": skillMd("keep", "Fine.") });
+    await link(base, "<i>ghost</i>", join(base, "nowhere"));
+    const { warnings } = await buildCatalog([source("s", [base])]);
+
+    expect(warnings.length).toBeGreaterThan(0);
+    for (const w of warnings) expect(w).not.toMatch(/[<>]/);
+    expect(warned(warnings, "ghost")).toBe(true);
+  });
+
+  test("control characters are removed from the excerpt", async () => {
+    const base = await tree({ "x/SKILL.md": "---\nname: x\ndescription: Controls.\n---\nAlpha\u0007Beta\u001bGamma\n" });
+    const { catalog } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.get("x")?.excerpt).toContain("AlphaBetaGamma");
+    expect(catalog.get("x")?.excerpt).not.toContain("\u0007");
   });
 
   test("a body-only SKILL.md is rejected with a warning", async () => {
@@ -301,6 +342,36 @@ describe("buildCatalog: path containment and limits", () => {
   });
 });
 
+describe("buildCatalog: resource and failure limits", () => {
+  test("a walk stops after MAX_SCAN_ENTRIES entries and warns, keeping what it read", async () => {
+    const files: Record<string, string> = { "aaa/SKILL.md": skillMd("aaa", "Read before the cap.") };
+    for (let i = 0; i <= MAX_SCAN_ENTRIES; i++) files[`zzz/f${i}.txt`] = "";
+    const base = await tree(files);
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.get("aaa")).toBeDefined();
+    expect(warned(warnings, String(MAX_SCAN_ENTRIES))).toBe(true);
+  });
+
+  test.skipIf(isRoot())("an unreadable SKILL.md is skipped with a warning instead of failing the build", async () => {
+    const base = await tree({
+      "locked/SKILL.md": skillMd("locked", "Unreadable."),
+      "open/SKILL.md": skillMd("open", "Readable."),
+    });
+    const locked = join(base, "locked", "SKILL.md");
+    await chmod(locked, 0o000);
+    try {
+      const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+      expect(catalog.get("open")).toBeDefined();
+      expect(catalog.get("locked")).toBeUndefined();
+      expect(warned(warnings, "locked", "unreadable")).toBe(true);
+    } finally {
+      await chmod(locked, 0o600);
+    }
+  });
+});
+
 describe("Catalog.load", () => {
   test("returns the body without frontmatter and the resources without SKILL.md", async () => {
     const { catalog } = await buildCatalog([source("anthropics", [repo("anthropics")])]);
@@ -372,11 +443,50 @@ describe("Catalog.read", () => {
     expect(await catalog.read("x", "over.txt")).toEqual({ error: "too-large" });
   });
 
+  test("refuses hidden files and git metadata inside a skill", async () => {
+    const base = await tree({
+      "x/SKILL.md": skillMd("x", "Has hidden files."),
+      "x/.env": "API_KEY=placeholder",
+      "x/.git/config": "[remote]",
+    });
+    const { catalog } = await buildCatalog([source("s", [base])]);
+
+    expect(await catalog.read("x", ".env")).toEqual({ error: "missing" });
+    expect(await catalog.read("x", ".git/config")).toEqual({ error: "missing" });
+  });
+
+  test("files inside a nested skill directory are not resources of the parent", async () => {
+    const base = await tree({
+      "parent/SKILL.md": skillMd("parent", "Owns guide."),
+      "parent/guide.md": "Parent guide.\n",
+      "parent/child/SKILL.md": skillMd("child", "Nested skill."),
+      "parent/child/notes.md": "Child notes.\n",
+    });
+    const { catalog } = await buildCatalog([source("s", [base])]);
+
+    expect(await catalog.read("parent", "guide.md")).toEqual({ text: "Parent guide.\n" });
+    expect(await catalog.read("parent", "child/notes.md")).toEqual({ error: "missing" });
+    expect(await catalog.read("parent", "child/SKILL.md")).toEqual({ error: "missing" });
+    expect((await catalog.load("parent")).resources).toEqual(["guide.md"]);
+    expect(await catalog.read("child", "notes.md")).toEqual({ text: "Child notes.\n" });
+  });
+
   test("reports missing files and unknown ids as missing", async () => {
     const { catalog } = await buildCatalog([source("anthropics", [repo("anthropics")])]);
 
     expect(await catalog.read("pdf", "nope.md")).toEqual({ error: "missing" });
     expect(await catalog.read("ghost", "forms.md")).toEqual({ error: "missing" });
+  });
+});
+
+describe("buildCatalog: lenient frontmatter", () => {
+  test("a SKILL.md that strict YAML rejects is accepted with a warning", async () => {
+    const { catalog, warnings } = await buildCatalog([source("lenient", [repo("lenient")])]);
+
+    expect(catalog.get("report-writer")?.description).toBe(
+      "Long-form argumentative writing: thesis, structure and sourced claims. Use when drafting or reviewing reports.",
+    );
+    expect(warned(warnings, "report-writer", "lenient")).toBe(true);
   });
 });
 

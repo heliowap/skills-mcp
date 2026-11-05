@@ -4,7 +4,9 @@
 import type { Dirent, Stats } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MAX_SCAN_DEPTH } from "./validate";
+import { sanitizeInline } from "../text";
+import type { ReadError } from "../types";
+import { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES } from "./validate";
 
 /** The file that makes a directory a skill; its name is fixed by the skill format. */
 export const SKILL_FILE = "SKILL.md";
@@ -15,7 +17,7 @@ export interface SkillDirectory {
   real: string;
   /** Posix path of the skill directory relative to its scan root; "" for the root itself. */
   relPath: string;
-  /** Regular files inside the skill directory, relative to it (SKILL.md included), with sizes. */
+  /** Regular files inside the skill directory, relative to it (SKILL.md included), with sizes. Files of nested skills are excluded. */
   files: { relPath: string; size: number }[];
 }
 
@@ -37,7 +39,7 @@ export function isInside(child: string, parent: string): boolean {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
-export type Contained = { ok: true; real: string } | { ok: false; error: "outside-root" | "missing" };
+export type Contained = { ok: true; real: string } | { ok: false; error: Extract<ReadError, "outside-root" | "missing"> };
 
 /**
  * Resolves `relPath` under `base` and checks containment twice: lexically, then on the realpath
@@ -64,14 +66,17 @@ export interface ScanOptions {
   followOutsideLinks?: boolean;
 }
 
-/** Walks one source root (up to MAX_SCAN_DEPTH) and returns every directory that holds a SKILL.md. */
+/**
+ * Walks one source root (up to MAX_SCAN_DEPTH and MAX_SCAN_ENTRIES entries) and returns every
+ * directory that holds a SKILL.md.
+ */
 export async function scanRoot(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const warnings: string[] = [];
   let rootReal: string;
   try {
     rootReal = await realpath(root);
   } catch {
-    return { directories: [], warnings: [`${root}: source root not found`] };
+    return { directories: [], warnings: [`${sanitizeInline(root)}: source root not found`] };
   }
 
   const state: WalkState = {
@@ -80,29 +85,37 @@ export async function scanRoot(root: string, options: ScanOptions = {}): Promise
     entries: [],
     warnings,
     visited: new Set([rootReal]),
+    seen: 0,
+    truncated: false,
   };
   await walk(state, rootReal, rootReal, "", 0);
+  if (state.truncated) {
+    warnings.push(`${sanitizeInline(root)}: scan stopped after ${MAX_SCAN_ENTRIES} entries; the rest is not read`);
+  }
   const entries = state.entries;
 
   const files = new Map(entries.filter((e) => !e.isDir).map((e) => [e.rel, e]));
   const dirs = [{ rel: "", real: rootReal }, ...entries.filter((e) => e.isDir)];
+  const skillDirs = dirs.filter((dir) => files.has(dir.rel ? `${dir.rel}/${SKILL_FILE}` : SKILL_FILE));
   const directories: SkillDirectory[] = [];
 
-  for (const dir of dirs) {
+  for (const dir of skillDirs) {
     const skillRel = dir.rel ? `${dir.rel}/${SKILL_FILE}` : SKILL_FILE;
     const skill = files.get(skillRel);
     if (!skill) continue;
     if (!isInside(skill.real, dir.real)) {
-      warnings.push(`${skillRel}: resolves outside its skill directory; skipped`);
+      warnings.push(`${sanitizeInline(skillRel)}: resolves outside its skill directory; skipped`);
       continue;
     }
 
     const prefix = dir.rel ? `${dir.rel}/` : "";
+    const nested = skillDirs.filter((other) => other.rel !== "" && other.rel !== dir.rel && other.rel.startsWith(prefix));
     const inside: { relPath: string; size: number }[] = [];
     for (const entry of entries) {
       if (entry.isDir || !entry.rel.startsWith(prefix)) continue;
+      if (nested.some((other) => entry.rel.startsWith(`${other.rel}/`))) continue;
       if (!isInside(entry.real, dir.real)) {
-        warnings.push(`${entry.rel}: resolves outside its skill directory; excluded`);
+        warnings.push(`${sanitizeInline(entry.rel)}: resolves outside its skill directory; excluded`);
         continue;
       }
       inside.push({ relPath: entry.rel.slice(prefix.length), size: entry.size });
@@ -120,6 +133,10 @@ interface WalkState {
   warnings: string[];
   /** Realpaths of directories already walked, so a target reached twice is scanned once. */
   visited: Set<string>;
+  /** Children examined so far, across the whole root walk. */
+  seen: number;
+  /** Set once MAX_SCAN_ENTRIES children have been examined; the walk then stops. */
+  truncated: boolean;
 }
 
 /**
@@ -131,13 +148,19 @@ async function walk(state: WalkState, scope: string, dirReal: string, dirRel: st
   try {
     children = await readdir(dirReal, { withFileTypes: true, encoding: "utf8" });
   } catch {
-    state.warnings.push(`${dirRel || "."}: directory unreadable; skipped`);
+    state.warnings.push(`${sanitizeInline(dirRel || ".")}: directory unreadable; skipped`);
     return;
   }
   children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   for (const child of children) {
+    if (state.truncated) return;
     if (child.name.startsWith(".") || child.name === "node_modules") continue;
+    state.seen += 1;
+    if (state.seen > MAX_SCAN_ENTRIES) {
+      state.truncated = true;
+      return;
+    }
     const rel = dirRel ? `${dirRel}/${child.name}` : child.name;
 
     let real: string;
@@ -146,7 +169,7 @@ async function walk(state: WalkState, scope: string, dirReal: string, dirRel: st
       real = await realpath(join(dirReal, child.name));
       info = await stat(real);
     } catch {
-      state.warnings.push(`${rel}: broken or unreadable link; skipped`);
+      state.warnings.push(`${sanitizeInline(rel)}: broken or unreadable link; skipped`);
       continue;
     }
 
@@ -155,7 +178,7 @@ async function walk(state: WalkState, scope: string, dirReal: string, dirRel: st
       // Only a directory linked from the top of a trusted source may leave the root.
       if (!state.followOutside || dirRel !== "" || !info.isDirectory()) {
         const where = scope === state.rootReal ? "the source root" : "its skill directory";
-        state.warnings.push(`${rel}: resolves outside ${where}; skipped`);
+        state.warnings.push(`${sanitizeInline(rel)}: resolves outside ${where}; skipped`);
         continue;
       }
       childScope = real;

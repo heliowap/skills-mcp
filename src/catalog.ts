@@ -1,9 +1,9 @@
-// Builds the read-only Catalog from materialized sources: validate, dedupe, resolve collisions.
+// Builds the read-only Catalog from materialized sources: validate, fold vendored copies, resolve collisions.
 // Skill content is untrusted: it is parsed and read, never executed.
 
 import type { Stats } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
 import { parseFrontmatter } from "./skill/frontmatter";
 import { SKILL_FILE, type SkillDirectory, resolveInside, scanRoot } from "./skill/scan";
 import {
@@ -17,7 +17,8 @@ import {
   sanitizeDescription,
   truncateUnits,
 } from "./skill/validate";
-import type { Catalog, MaterializedSource, SkillId, SkillRecord } from "./types";
+import { sanitizeInline, stripControls } from "./text";
+import type { Catalog, MaterializedSource, ReadError, ShadowedSkill, SkillId, SkillRecord } from "./types";
 
 export interface BuiltCatalog {
   catalog: Catalog;
@@ -52,18 +53,19 @@ export interface BuildOptions {
 }
 
 /**
- * Builds the catalog. Sources are taken in the given order: an earlier source keeps a
- * skill id and later ones are reported as shadowed. Within a source, copies of one skill
- * are collapsed silently: a copy under `upstream/` or `plugins/` loses, then the shallowest
- * wins, then the lexicographically smallest path.
+ * Builds the catalog. Sources are taken in the given order: an earlier source keeps a skill id
+ * and later ones are reported as shadowed. Within a source, a vendored copy (under `upstream/`
+ * or `plugins/`) folds into the original that shares its frontmatter name; distinct skills keep
+ * their own entries and only a shared leaf id makes them compete. Every skill that is dropped
+ * for any reason other than folding a vendored copy produces a warning.
  */
 export async function buildCatalog(sources: MaterializedSource[], options: BuildOptions = {}): Promise<BuiltCatalog> {
   const warnings: string[] = [];
-  const shadowed: { id: SkillId; sourceId: string; by: string }[] = [];
+  const shadowed: ShadowedSkill[] = [];
   const winners = new Map<SkillId, Accepted>();
 
   for (const source of sources) {
-    const tag = `[${source.sourceId}]`;
+    const tag = `[${sanitizeInline(source.sourceId)}]`;
     warnings.push(...source.warnings.map((w) => `${tag} ${w}`));
     const followOutsideLinks = options.trustedSources?.has(source.sourceId) ?? false;
 
@@ -78,13 +80,9 @@ export async function buildCatalog(sources: MaterializedSource[], options: Build
       }
     }
 
-    // Copies of one skill share a frontmatter name (a vendored `upstream/SKILL.md` has leaf
-    // `upstream`, so the name, not the leaf, identifies it). Distinct skills that still share
-    // a leaf id compete for that id, and the loser is warned about because it is a real skill.
-    const byName = dedupe(found, (e) => e.record.name, () => {});
-    const byId = dedupe(byName, (e) => e.record.id, (loser, winner) => {
+    const byId = dedupe(foldVendoredCopies(found), (e) => e.record.id, (loser, winner) => {
       warnings.push(
-        `${tag} ${loser.record.relPath || "."}: skill id "${loser.record.id}" is already used by ${winner.record.relPath || "."}; skipped`,
+        `${tag} ${where(loser)}: skill id "${sanitizeInline(loser.record.id)}" is already used by ${where(winner)}; skipped`,
       );
     });
 
@@ -92,12 +90,47 @@ export async function buildCatalog(sources: MaterializedSource[], options: Build
     for (const entry of byId) {
       const id = entry.record.id;
       const current = winners.get(id);
-      if (current) shadowed.push({ id, sourceId: source.sourceId, by: current.record.sourceId });
-      else winners.set(id, entry);
+      if (current) {
+        shadowed.push({ id, sourceId: source.sourceId, by: current.record.sourceId });
+        warnings.push(
+          `${tag} ${where(entry)}: skill id "${sanitizeInline(id)}" is already provided by source ${sanitizeInline(current.record.sourceId)}; skipped`,
+        );
+      } else {
+        winners.set(id, entry);
+      }
     }
   }
 
   return { catalog: makeCatalog(winners, shadowed), warnings };
+}
+
+function where(entry: Accepted): string {
+  return sanitizeInline(entry.record.relPath || ".");
+}
+
+/**
+ * Folds vendored copies by frontmatter name. A copy under `upstream/` or `plugins/` is dropped
+ * when an original with the same name exists; with only copies, the best one stands for them all.
+ * Originals that share a name are distinct skills and are all kept.
+ */
+function foldVendoredCopies(entries: Accepted[]): Accepted[] {
+  const groups = new Map<string, Accepted[]>();
+  for (const entry of entries) {
+    const key = entry.record.name;
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
+  }
+
+  const kept: Accepted[] = [];
+  for (const group of groups.values()) {
+    const originals = group.filter((e) => !e.vendored);
+    if (originals.length > 0) {
+      kept.push(...originals);
+      continue;
+    }
+    const [best] = [...group].sort(compareCopies);
+    if (best) kept.push(best);
+  }
+  return kept;
 }
 
 /** Keeps the best entry per key (see compareCopies); `onLoser` hears about each entry dropped. */
@@ -116,6 +149,7 @@ function dedupe(
   for (const group of groups.values()) {
     group.sort(compareCopies);
     const [winner, ...losers] = group;
+    if (!winner) continue;
     kept.push(winner);
     for (const loser of losers) onLoser(loser, winner);
   }
@@ -135,24 +169,28 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+function mebibytes(bytes: number): string {
+  return `${bytes / (1024 * 1024)} MiB`;
+}
+
 /** Validates one directory. Rejections explain themselves in `warnings`; `entry` is set only when accepted. */
 async function accept(
   source: MaterializedSource,
   directory: SkillDirectory,
   rootIndex: number,
 ): Promise<{ entry?: Accepted; warnings: string[] }> {
-  const where = directory.relPath ? `${directory.relPath}/${SKILL_FILE}` : SKILL_FILE;
-  const reject = (reason: string) => ({ warnings: [`${where}: ${reason}; skipped`] });
+  const shown = sanitizeInline(directory.relPath ? `${directory.relPath}/${SKILL_FILE}` : SKILL_FILE);
+  const reject = (reason: string) => ({ warnings: [`${shown}: ${reason}; skipped`] });
 
   const leaf = directory.relPath.split("/").pop() ?? "";
   const id = leaf || basename(directory.real);
-  if (!isValidId(id)) return reject(`invalid skill id "${id}"`);
+  if (!isValidId(id)) return reject(`invalid skill id "${sanitizeInline(id)}"`);
 
   if (directory.files.length > MAX_FILES_PER_SKILL) {
     return reject(`more than ${MAX_FILES_PER_SKILL} files`);
   }
   const totalBytes = directory.files.reduce((sum, f) => sum + f.size, 0);
-  if (totalBytes > MAX_SKILL_BYTES) return reject("more than 16 MiB of files");
+  if (totalBytes > MAX_SKILL_BYTES) return reject(`more than ${mebibytes(MAX_SKILL_BYTES)} of files`);
 
   const text = await readText(directory.real, SKILL_FILE, MAX_SKILL_BYTES);
   if (!text.ok) return reject(`SKILL.md is ${text.error}`);
@@ -170,8 +208,11 @@ async function accept(
   if (description.text === "") return reject("empty description");
 
   const warnings: string[] = [];
+  if (parsed.lenient) {
+    warnings.push(`${shown}: frontmatter is not strict YAML; read with the lenient line parser`);
+  }
   if (description.truncated) {
-    warnings.push(`${where}: description longer than ${MAX_DESCRIPTION} characters; truncated`);
+    warnings.push(`${shown}: description longer than ${MAX_DESCRIPTION} characters; truncated`);
   }
 
   const record: SkillRecord = {
@@ -182,7 +223,7 @@ async function accept(
     root: directory.real,
     relPath: directory.relPath,
     revision: source.revision,
-    excerpt: truncateUnits(parsed.body, MAX_EXCERPT),
+    excerpt: stripControls(truncateUnits(parsed.body, MAX_EXCERPT)),
   };
   const resources = directory.files.map((f) => f.relPath).filter((p) => p !== SKILL_FILE).sort();
   const vendored = directory.relPath.split("/").some((s) => s === "upstream" || s === "plugins");
@@ -193,7 +234,8 @@ async function accept(
   };
 }
 
-type TextRead = { ok: true; text: string } | { ok: false; error: "binary" | "too-large" | "outside-root" | "missing" };
+/** `unreadable` is a file that exists but cannot be read (permissions); `read` reports it as missing. */
+type TextRead = { ok: true; text: string } | { ok: false; error: ReadError | "unreadable" };
 
 /** Reads a text file under `base`, enforcing containment, a size cap, and UTF-8 without NUL bytes. */
 async function readText(base: string, relPath: string, limit: number): Promise<TextRead> {
@@ -209,7 +251,12 @@ async function readText(base: string, relPath: string, limit: number): Promise<T
   if (!info.isFile()) return { ok: false, error: "missing" };
   if (info.size > limit) return { ok: false, error: "too-large" };
 
-  const bytes = await readFile(found.real);
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(found.real);
+  } catch {
+    return { ok: false, error: "unreadable" };
+  }
   if (bytes.includes(0)) return { ok: false, error: "binary" };
   try {
     return { ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
@@ -218,7 +265,7 @@ async function readText(base: string, relPath: string, limit: number): Promise<T
   }
 }
 
-function makeCatalog(winners: Map<SkillId, Accepted>, shadowed: { id: SkillId; sourceId: string; by: string }[]): Catalog {
+function makeCatalog(winners: Map<SkillId, Accepted>, shadowed: ShadowedSkill[]): Catalog {
   const records = [...winners.values()].map((w) => w.record).sort((a, b) => compareText(a.id, b.id));
 
   return {
@@ -227,12 +274,12 @@ function makeCatalog(winners: Map<SkillId, Accepted>, shadowed: { id: SkillId; s
 
     async load(id) {
       const entry = winners.get(id);
-      if (!entry) throw new CatalogError(`unknown skill: ${id}`);
+      if (!entry) throw new CatalogError(`unknown skill: ${sanitizeInline(id)}`);
 
       const text = await readText(entry.record.root, SKILL_FILE, MAX_SKILL_BYTES);
-      if (!text.ok) throw new CatalogError(`${id}: SKILL.md is ${text.error}`);
+      if (!text.ok) throw new CatalogError(`${sanitizeInline(id)}: SKILL.md is ${text.error}`);
       const parsed = parseFrontmatter(text.text);
-      if (!parsed.ok) throw new CatalogError(`${id}: ${parsed.reason}`);
+      if (!parsed.ok) throw new CatalogError(`${sanitizeInline(id)}: ${parsed.reason}`);
 
       return { record: entry.record, body: parsed.body, resources: [...entry.resources] };
     },
@@ -240,8 +287,15 @@ function makeCatalog(winners: Map<SkillId, Accepted>, shadowed: { id: SkillId; s
     async read(id, relPath) {
       const entry = winners.get(id);
       if (!entry) return { error: "missing" };
-      const result = await readText(entry.record.root, relPath, MAX_READ_BYTES);
-      return result.ok ? { text: result.text } : { error: result.error };
+      // Containment first, so escapes report as outside-root; then only SKILL.md and listed resources are served.
+      const contained = await resolveInside(entry.record.root, relPath);
+      if (!contained.ok) return { error: contained.error };
+      const rel = relative(entry.record.root, resolve(entry.record.root, relPath)).split(sep).join("/");
+      if (rel !== SKILL_FILE && !entry.resources.includes(rel)) return { error: "missing" };
+
+      const result = await readText(entry.record.root, rel, MAX_READ_BYTES);
+      if (result.ok) return { text: result.text };
+      return { error: result.error === "unreadable" ? "missing" : result.error };
     },
 
     shadowed: () => shadowed,

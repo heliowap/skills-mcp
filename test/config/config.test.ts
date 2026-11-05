@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigError, loadConfig, saveConfig } from "../../src/config";
+import { ConfigError, ThresholdsSchema, loadConfig, saveConfig } from "../../src/config";
 
 let dir: string;
 let savedConfig: string | undefined;
@@ -77,6 +77,12 @@ describe("loadConfig", () => {
     await writeFile(path, JSON.stringify({ sources: [{ kind: "shell", id: "x", command: "rm -rf /" }] }));
 
     await expect(loadConfig()).rejects.toBeInstanceOf(ConfigError);
+  });
+});
+
+describe("ThresholdsSchema", () => {
+  test("applies the default action, named and fits thresholds", () => {
+    expect(ThresholdsSchema.parse({})).toEqual({ action: 0.3, named: 0.5, fits: 0.3 });
   });
 });
 

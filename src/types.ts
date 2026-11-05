@@ -25,13 +25,19 @@ export interface SourceAdapter<S extends SourceSpec = SourceSpec> {
   sync(spec: S, cacheDir: string, opts: { offline: boolean; signal?: AbortSignal }): Promise<MaterializedSource>;
 }
 
+/** Why `Catalog.read` refused a file. */
+export type ReadError = "binary" | "too-large" | "outside-root" | "missing";
+
+/** A skill left out of the catalog because an earlier source already provides its id. `by` is that source. */
+export interface ShadowedSkill { id: SkillId; sourceId: string; by: string }
+
 /** Read-only view over the merged, deduplicated skills. */
 export interface Catalog {
   all(): readonly SkillRecord[];
   get(id: SkillId): SkillRecord | undefined;
   load(id: SkillId): Promise<{ record: SkillRecord; body: string; resources: string[] }>;
-  read(id: SkillId, relPath: string): Promise<{ text: string } | { error: "binary" | "too-large" | "outside-root" | "missing" }>;
-  shadowed(): readonly { id: SkillId; sourceId: string; by: string }[];
+  read(id: SkillId, relPath: string): Promise<{ text: string } | { error: ReadError }>;
+  shadowed(): readonly ShadowedSkill[];
 }
 
 // Decision port — AI SDK churn stays inside src/decision/ai-sdk.ts
@@ -52,7 +58,7 @@ export interface DecisionModel {
 /** Per-model confidence thresholds, taken from config. */
 export interface Thresholds { action: number; named: number; fits: number } // per model, from config
 /** Lexical (BM25-style) ranker used as the first pass and as the fallback. */
-export interface LexicalRanker { rank(query: string, skills: readonly SkillRecord[], k: number): { id: SkillId; score: number }[] }
+export interface LexicalRanker { rank(task: string, skills: readonly SkillRecord[], k: number): { id: SkillId; score: number }[] }
 /** Outcome of `find`. `needsSkill: null` means unknown (lexical ranking only). */
 export interface FindResult {
   needsSkill: boolean | null;  // null = unknown (BM25 only)
