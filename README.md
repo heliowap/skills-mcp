@@ -95,7 +95,7 @@ bun src/cli.ts sources sync [id]                  # online sync; exit 1 if any s
 bun src/cli.ts sources remove <id>
 ```
 
-`sources add` takes a full JSON source spec, and it accepts all three kinds, including `cli`. It saves the spec and does not sync; run `sources sync <id>` to fetch it. Exit codes: 0 done, 1 failure (reason on stderr), 2 usage.
+`sources add` takes a full JSON source spec, and it accepts all three kinds, including `cli`. It saves the spec and does not sync; run `sources sync <id>` to sync it. Exit codes: 0 done, 1 failure (reason on stderr), 2 usage.
 
 ## Tools
 
@@ -104,16 +104,17 @@ bun src/cli.ts sources remove <id>
 | `find` | `task`, optional `limit` (1 to 10) | `needsSkill`, `suggestion`, `ranker`, `reason?`, `candidates[{id, description, score}]` |
 | `load` | `id` | `id`, `name`, `description`, `body`, `resources`, `base` |
 | `read` | `id`, `path` (relative) | `text`, or `error`: `binary`, `too-large`, `outside-root` or `missing` |
-| `sources` | `action` (`list`, `add`, `sync`, `remove`); `id`, `kind`, `repo`, `path` | `sources`, `warnings` |
+| `sources` | `action` (`list`, `add`, `sync`, `remove`); `id`, `kind`, `repo` | `sources`, `warnings` |
 
-`sources add` accepts only `kind` `github` (with `repo`) or `local` (with `path`). A `cli` source is refused, and the refusal names the admin CLI. A failed sync is reported in `warnings`. Errors are MCP error results with a sanitized one-line message.
+`sources add` accepts only `kind` `github` (with `repo`). A `local` or `cli` source is refused, and the refusal names the admin CLI. `sources remove` refuses `local` and `cli` sources the same way; it removes GitHub sources. A failed sync is reported in `warnings`. Errors are MCP error results with a sanitized one-line message.
 
 ## Security model
 
-- **Untrusted content.** Every skill, resource and source is data. The server reads skill files and never runs them. Names and descriptions are validated and stripped of control characters and XML-like tags before any agent-visible text.
+- **Untrusted content.** Every skill, resource and source is data. The server reads skill files and never runs them. The `load` body and the `read` text are untrusted skill content, returned verbatim. Names and descriptions are validated and stripped of control characters and XML-like tags before any agent-visible text.
+- **Who adds sources.** Agents may add and remove GitHub sources through the `sources` tool. Local and command sources come only from the config file or the admin CLI, and the tool refuses to add or remove them.
 - **Trusted sources.** A local source is trusted: its top-level symlinks may point outside it. GitHub and command sources are not trusted; every path is resolved with `realpath` and must stay inside its skill directory.
-- **Command sources** run a program and can only come from the config file or the admin CLI. The agent's `sources` tool refuses them.
-- **Agent-added sources** are limited to GitHub and local sources.
+- **Paths.** `load` returns `base`, the absolute path of the skill directory, so the agent sees where the skill lives on disk.
+- **Command sources** run a program, so they are added only through the config file or the admin CLI.
 - **Processes.** Commands are spawned with an argument array and a timeout, never through a shell. Git runs with `GIT_TERMINAL_PROMPT=0`. Command sources get an allowlisted environment, so API keys are not passed to them.
 - **Keys** are read from the environment by name when a model is built. They do not appear in logs, errors, tool output or config files.
 - **stdout** carries only MCP framing. Diagnostics go to stderr.

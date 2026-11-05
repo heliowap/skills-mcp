@@ -13,7 +13,7 @@ export class ConfigError extends Error {
   }
 }
 
-/** Per-model confidence thresholds; each defaults to the documented value. */
+/** Per-model thresholds; each defaults to the documented value. */
 export const ThresholdsSchema = z.object({
   action: z.number().min(0).max(1).default(0.3),
   named: z.number().min(0).max(1).default(0.5),

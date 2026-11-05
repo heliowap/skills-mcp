@@ -23,7 +23,7 @@ export const CLI_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const CLI_MAX_SKILLS = 256;
 /** Most references one skill may list; the rest are not synced. */
 export const CLI_MAX_REFERENCES = 64;
-/** Wall-clock budget for one source's whole sync, listing included. */
+/** Wall-clock budget for one source's whole sync, listing included; a sync that overruns it fails. */
 export const CLI_SYNC_BUDGET_MS = 120_000;
 
 export interface CliAdapterOptions {
@@ -83,16 +83,11 @@ export function createCliAdapter(options: CliAdapterOptions = {}): SourceAdapter
         warnings.push(`command source ${spec.id}: lists more than ${maxSkills} skills; the rest are not synced`);
       }
 
-      let budgetWarned = false;
-      const budgetSpent = (): boolean => {
-        if (Date.now() < deadline) return false;
-        if (!budgetWarned) {
-          budgetWarned = true;
-          warnings.push(
-            `command source ${spec.id}: sync ran past its ${syncBudgetMs} ms time budget; the rest are not synced`,
-          );
+      // A partial result is never swapped in: running out of budget fails the sync, so the previous cache stays.
+      const assertWithinBudget = (): void => {
+        if (Date.now() >= deadline) {
+          throw new SourceError(`command source ${spec.id}: sync ran past its ${syncBudgetMs} ms time budget`);
         }
-        return true;
       };
 
       const staging = join(cacheDir, "cli", `.${spec.id}.staging-${crypto.randomUUID()}`);
@@ -100,7 +95,7 @@ export function createCliAdapter(options: CliAdapterOptions = {}): SourceAdapter
       try {
         const seen = new Set<string>();
         for (const entry of listed.slice(0, maxSkills)) {
-          if (budgetSpent()) break;
+          assertWithinBudget();
           const { id } = entry;
           if (typeof id !== "string" || !isSegment(id)) {
             warnings.push(
@@ -134,7 +129,7 @@ export function createCliAdapter(options: CliAdapterOptions = {}): SourceAdapter
             );
           }
           for (const reference of entry.references.slice(0, maxReferences)) {
-            if (budgetSpent()) break;
+            assertWithinBudget();
             if (typeof reference !== "string" || reference === "SKILL.md" || !isSafeRelativePath(reference)) {
               warnings.push(
                 `command source ${spec.id}: skipped resource ${sanitizeInline(String(JSON.stringify(reference)))} of ${id}`,

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { REPO_ROOT, childEnv, useSandbox } from "./helpers";
+import { CHILD_TIMEOUT_MS, REPO_ROOT, childEnv, useSandbox } from "./helpers";
 
 const sandbox = useSandbox();
 
@@ -16,6 +16,7 @@ async function cli(...args: string[]): Promise<CliRun> {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    timeout: CHILD_TIMEOUT_MS,
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),

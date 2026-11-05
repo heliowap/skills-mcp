@@ -39,6 +39,11 @@ describe("renderToolLine matches OpenCode's Code Mode catalog", () => {
       '  - tools["chrome-devtools"].list_pages(): Promise<unknown> // Get a list of pages open in the browser.',
     );
   });
+
+  test("a tool whose input schema is not a schema object is refused, not rendered", () => {
+    expect(() => renderToolLine("skills.find", { inputSchema: "not a schema" })).toThrow(/schema/);
+    expect(() => renderToolLine("skills.find", { inputSchema: ["type"] })).toThrow(/schema/);
+  });
 });
 
 describe("measure", () => {

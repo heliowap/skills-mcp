@@ -4,9 +4,11 @@
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { App } from "../app";
-import type { FindResult, SourceSpec } from "../types";
-import { messageOf, sanitizeInline } from "../text";
+import { MAX_OWNER_CHARS, MAX_REPO_CHARS } from "../sources/github";
 import type { SyncOutcome } from "../sources/registry";
+import { MAX_RELATIVE_PATH_CHARS, MAX_SEGMENT_CHARS } from "../sources/shared";
+import { messageOf, sanitizeInline } from "../text";
+import type { FindResult, SourceSpec } from "../types";
 
 /** Longest task text `find` accepts, in characters. */
 export const MAX_TASK_CHARS = 2000;
@@ -14,13 +16,19 @@ export const MAX_TASK_CHARS = 2000;
 export const MAX_LIMIT = 10;
 /** Longest description shown for one candidate, in characters. */
 export const CANDIDATE_CHARS = 300;
-/** Longest path or name shown to the agent, in characters. */
-export const PATH_CHARS = 512;
-/** Longest skill id accepted, in characters. */
-export const SKILL_ID_CHARS = 64;
-const REASON_CHARS = 300;
-const ERROR_CHARS = 300;
-const WARNING_CHARS = 300;
+/** Longest reason `find` shows, in characters. */
+export const REASON_CHARS = 300;
+/** Longest error message a tool returns, in characters. */
+export const ERROR_CHARS = 300;
+/** Longest warning line in a `sources` result, in characters. */
+export const WARNING_CHARS = 300;
+/** Longest `kind` or `action` value accepted or echoed, in characters. */
+export const WORD_CHARS = 16;
+/**
+ * Longest `repo` value accepted: an https URL with an owner, a repository name and `.git`, the
+ * longest form parseGithubRepo takes.
+ */
+export const REPO_CHARS = "https://github.com/".length + MAX_OWNER_CHARS + 1 + MAX_REPO_CHARS + ".git".length;
 /** Warnings shown in one `sources` result; the rest are only logged. */
 export const WARNINGS_SHOWN = 20;
 
@@ -60,12 +68,12 @@ const ReadOutput = z.object({
 });
 
 // `action` is list, add, sync or remove; a string keeps the fixed cost down, and other values are refused.
+// `add` takes only a github source: local and command sources come from the config file or the admin CLI.
 const SourcesInput = z.object({
   action: z.string(),
   id: z.string().optional(),
   kind: z.string().optional(),
   repo: z.string().optional(),
-  path: z.string().optional(),
 });
 // Plain string lists: an object array prints as a multi-line type in every model step.
 // A failed sync is reported as a warning line, so there is one list for problems.
@@ -73,6 +81,8 @@ const SourcesOutput = z.object({
   sources: z.array(z.string()),
   warnings: z.array(z.string()),
 });
+
+type SourcesInputShape = z.infer<typeof SourcesInput>;
 
 /** Input the tool layer rejects before any work starts; the message names the missing field. */
 export class ToolInputError extends Error {
@@ -82,24 +92,22 @@ export class ToolInputError extends Error {
   }
 }
 
-/** Command sources run a program, so an agent may not register one. The user adds them with the CLI. */
-export class CommandSourceRefused extends Error {
-  constructor() {
-    super(
-      "command sources cannot be added through this tool; the user adds them with the admin CLI (bun src/cli.ts sources add, with a JSON spec)",
-    );
-    this.name = "CommandSourceRefused";
+/**
+ * A source change an agent may not make. Local and command sources are trusted or run a program,
+ * so the user adds and removes them through the config file or the admin CLI.
+ */
+export class SourceRefused extends Error {
+  constructor(kind: "local" | "cli", verb: "add" | "remove") {
+    const noun = kind === "cli" ? "command" : "local";
+    const done = verb === "add" ? "added" : "removed";
+    const usage = verb === "add" ? "sources add, with a JSON spec" : "sources remove <id>";
+    super(`${noun} sources cannot be ${done} through this tool; the user runs the admin CLI (bun src/cli.ts ${usage})`);
+    this.name = "SourceRefused";
   }
 }
 
 /** The output of `find`, shared by the MCP tool and the CLI's `find --json`. Every string is sanitized. */
-export interface FindOutputShape {
-  needsSkill: boolean | null;
-  suggestion: string | null;
-  ranker: FindResult["ranker"];
-  reason?: string;
-  candidates: { id: string; description: string; score: number }[];
-}
+export type FindOutputShape = Pick<FindResult, "needsSkill" | "suggestion" | "ranker" | "reason" | "candidates">;
 
 export function shapeFind(result: FindResult): FindOutputShape {
   return {
@@ -142,15 +150,15 @@ export function registerTools(server: McpServer, app: App): void {
     },
     ({ id }) =>
       guarded("load", async () => {
-        bounded("id", id, SKILL_ID_CHARS);
+        bounded("id", id, MAX_SEGMENT_CHARS);
         const loaded = await app.catalog().load(id);
         return ok({
           id: loaded.record.id,
           name: loaded.record.name,
           description: loaded.record.description,
           body: loaded.body,
-          resources: loaded.resources.map((r) => sanitizeInline(r, PATH_CHARS)),
-          base: sanitizeInline(loaded.record.root, PATH_CHARS),
+          resources: loaded.resources.map((r) => sanitizeInline(r, MAX_RELATIVE_PATH_CHARS)),
+          base: sanitizeInline(loaded.record.root, MAX_RELATIVE_PATH_CHARS),
         });
       }),
   );
@@ -158,15 +166,15 @@ export function registerTools(server: McpServer, app: App): void {
   server.registerTool(
     "read",
     {
-      description: "Read a resource file of a skill by relative path.",
+      description: "Read a skill's resource file by relative path.",
       inputSchema: ReadInput,
       outputSchema: ReadOutput,
       annotations: { readOnlyHint: true },
     },
     ({ id, path }) =>
       guarded("read", async () => {
-        bounded("id", id, SKILL_ID_CHARS);
-        bounded("path", path, PATH_CHARS);
+        bounded("id", id, MAX_SEGMENT_CHARS);
+        bounded("path", path, MAX_RELATIVE_PATH_CHARS);
         const result = await app.catalog().read(id, path);
         return ok("text" in result ? { text: result.text } : { error: result.error });
       }),
@@ -175,7 +183,8 @@ export function registerTools(server: McpServer, app: App): void {
   server.registerTool(
     "sources",
     {
-      description: "List, add (github or local), sync or remove sources.",
+      description:
+        "List or sync sources; add or remove GitHub sources only. Local and command sources: admin CLI.",
       inputSchema: SourcesInput,
       outputSchema: SourcesOutput,
     },
@@ -186,7 +195,7 @@ export function registerTools(server: McpServer, app: App): void {
           case "list":
             return sourcesResult(await app.sources.list(), [], []);
           case "add": {
-            const outcome = await app.sources.add(sourceSpecFrom(input));
+            const outcome = await app.sources.add(githubSpecFrom(input));
             return sourcesResult(await app.sources.list(), failuresOf([outcome]), [
               ...warningsOf([outcome]),
               ...app.warnings(),
@@ -199,12 +208,17 @@ export function registerTools(server: McpServer, app: App): void {
               ...app.warnings(),
             ]);
           }
-          case "remove":
+          case "remove": {
             if (input.id === undefined) throw new ToolInputError("sources remove needs id");
+            const target = (await app.sources.list()).find((spec) => spec.id === input.id);
+            if (target?.kind === "local" || target?.kind === "cli") throw new SourceRefused(target.kind, "remove");
             await app.sources.remove(input.id);
             return sourcesResult(await app.sources.list(), [], app.warnings());
+          }
           default:
-            throw new ToolInputError(`sources: unknown action "${sanitizeInline(input.action, 16)}"; use list, add, sync or remove`);
+            throw new ToolInputError(
+              `sources: unknown action "${sanitizeInline(input.action, WORD_CHARS)}"; use list, add, sync or remove`,
+            );
         }
       }),
   );
@@ -223,30 +237,27 @@ function limitOf(limit: number | undefined): number | undefined {
   return limit;
 }
 
-function checkSourcesBounds(input: z.infer<typeof SourcesInput>): void {
-  if (input.id !== undefined) bounded("id", input.id, SKILL_ID_CHARS);
-  if (input.kind !== undefined) bounded("kind", input.kind, 16);
-  if (input.repo !== undefined) bounded("repo", input.repo, 200);
-  if (input.path !== undefined) bounded("path", input.path, PATH_CHARS);
+function checkSourcesBounds(input: SourcesInputShape): void {
+  if (input.id !== undefined) bounded("id", input.id, MAX_SEGMENT_CHARS);
+  if (input.kind !== undefined) bounded("kind", input.kind, WORD_CHARS);
+  if (input.repo !== undefined) bounded("repo", input.repo, REPO_CHARS);
 }
 
-/** Turns the agent's flat fields into a source spec. Command sources never get past this point. */
-function sourceSpecFrom(input: z.infer<typeof SourcesInput>): SourceSpec {
+/** Turns the agent's flat fields into a GitHub source spec. Local and command sources are refused here. */
+function githubSpecFrom(input: SourcesInputShape): Extract<SourceSpec, { kind: "github" }> {
   if (input.id === undefined) throw new ToolInputError("sources add needs id");
-  const id = input.id;
   switch (input.kind) {
     case "github":
       if (input.repo === undefined) throw new ToolInputError("sources add of a github source needs repo");
-      return { kind: "github", id, repo: input.repo };
+      return { kind: "github", id: input.id, repo: input.repo };
     case "local":
-      if (input.path === undefined) throw new ToolInputError("sources add of a local source needs path");
-      return { kind: "local", id, path: input.path };
+      throw new SourceRefused("local", "add");
     case "cli":
-      throw new CommandSourceRefused();
+      throw new SourceRefused("cli", "add");
     case undefined:
-      throw new ToolInputError("sources add needs kind: github or local");
+      throw new ToolInputError("sources add needs kind: github");
     default:
-      throw new ToolInputError(`sources add: unknown kind "${sanitizeInline(input.kind, 16)}"; use github or local`);
+      throw new ToolInputError(`sources add: unknown kind "${sanitizeInline(input.kind, WORD_CHARS)}"; use github`);
   }
 }
 
@@ -256,7 +267,7 @@ function sourcesResult(
   warnings: readonly string[],
 ): CallToolResult {
   return ok({
-    sources: specs.map((spec) => `${sanitizeInline(spec.id, SKILL_ID_CHARS)} (${spec.kind})`),
+    sources: specs.map((spec) => `${sanitizeInline(spec.id, MAX_SEGMENT_CHARS)} (${spec.kind})`),
     warnings: [...failures.map((f) => `source ${f.id}: ${f.error}`), ...warnings]
       .slice(0, WARNINGS_SHOWN)
       .map((w) => sanitizeInline(w, WARNING_CHARS)),

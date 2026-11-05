@@ -1,11 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createApp } from "../../src/app";
+import { z } from "zod";
+import { type AppOptions, createApp } from "../../src/app";
 import { connectInProcess, type InProcessClient } from "../../src/mcp/inprocess";
 import { buildServer } from "../../src/mcp/server";
-import { defaultConfig, type ToolInfo, type ToolResult, useSandbox } from "./helpers";
+import { createGithubAdapter } from "../../src/sources/github";
+import { defaultAdapters } from "../../src/sources/registry";
+import { makeRemote, makeTempDir } from "../sources/helpers";
+import { defaultConfig, useSandbox } from "./helpers";
+
+const ToolResultSchema = z.object({
+  content: z.array(z.object({ type: z.string(), text: z.string() })),
+  structuredContent: z.unknown().optional(),
+  isError: z.boolean().optional(),
+});
+
+const ToolListSchema = z.object({
+  tools: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      outputSchema: z.object({ type: z.string().optional() }).optional(),
+      annotations: z.object({ readOnlyHint: z.boolean().optional() }).optional(),
+    }),
+  ),
+});
+
+type ListedTool = z.infer<typeof ToolListSchema>["tools"][number];
 
 interface FindStructured {
   needsSkill: boolean | null;
@@ -27,18 +49,23 @@ interface ReadStructured {
 
 const sandbox = useSandbox();
 
-async function connect(): Promise<InProcessClient> {
-  return connectInProcess(buildServer(await createApp()));
+async function connect(options: AppOptions = {}): Promise<InProcessClient> {
+  return connectInProcess(buildServer(await createApp(options)));
 }
 
-function call(client: InProcessClient, name: string, args: Record<string, unknown>): Promise<ToolResult> {
-  return client.request<ToolResult>("tools/call", { name, arguments: args });
+function call(client: InProcessClient, name: string, args: Record<string, unknown>) {
+  return client.request("tools/call", ToolResultSchema, { name, arguments: args });
+}
+
+async function listedSources(client: InProcessClient): Promise<string[]> {
+  const result = await call(client, "sources", { action: "list" });
+  return (result.structuredContent as SourcesStructured).sources;
 }
 
 describe("tool contract", () => {
   test("each tool has an output schema and a one-line description of at most 120 characters", async () => {
     const client = await connect();
-    const { tools } = await client.request<{ tools: ToolInfo[] }>("tools/list");
+    const { tools } = await client.request("tools/list", ToolListSchema);
 
     expect(tools).toHaveLength(4);
     for (const tool of tools) {
@@ -51,10 +78,20 @@ describe("tool contract", () => {
 
   test("sources is the only tool that does not declare readOnlyHint", async () => {
     const client = await connect();
-    const { tools } = await client.request<{ tools: ToolInfo[] }>("tools/list");
+    const { tools } = await client.request("tools/list", ToolListSchema);
 
-    const mutating = tools.filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
+    const mutating = tools.filter((tool: ListedTool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
     expect(mutating).toEqual(["sources"]);
+  });
+
+  test("the sources description says agents add and remove GitHub sources only, and names the admin CLI", async () => {
+    const client = await connect();
+    const { tools } = await client.request("tools/list", ToolListSchema);
+    const sources = tools.find((tool) => tool.name === "sources");
+
+    const firstLine = (sources?.description ?? "").split("\n")[0] ?? "";
+    expect(firstLine).toContain("GitHub sources only");
+    expect(firstLine).toContain("admin CLI");
   });
 
   test("find falls back to lexical ranking when the configured model is unavailable, and strips markup from the reason", async () => {
@@ -91,37 +128,91 @@ describe("tool contract", () => {
   });
 });
 
-describe("sources tool", () => {
+describe("sources tool: who may add and remove which sources", () => {
   test("add refuses a command source and writes nothing to the config", async () => {
     const client = await connect();
 
     const result = await call(client, "sources", { action: "add", kind: "cli", id: "agent-desktop" });
-    const listed = await call(client, "sources", { action: "list" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("admin CLI");
-    expect((listed.structuredContent as SourcesStructured).sources).toEqual(["anthropics (local)"]);
+    expect(await listedSources(client)).toEqual(["anthropics (local)"]);
   });
 
-  test("add of a local directory makes its skills loadable without a restart", async () => {
-    const dir = await realpath(await mkdtemp(join(tmpdir(), "skills-mcp-local-")));
+  test("add refuses a local directory, names the admin CLI, and writes nothing to the config", async () => {
+    const dir = await makeTempDir();
     try {
       await mkdir(join(dir, "skills", "my-skill"), { recursive: true });
-      await writeFile(
-        join(dir, "skills", "my-skill", "SKILL.md"),
-        "---\nname: my-skill\ndescription: Does the mine thing.\n---\n\nMine body.\n",
-      );
+      await writeFile(join(dir, "skills", "my-skill", "SKILL.md"), "---\nname: my-skill\ndescription: Mine.\n---\n");
       const client = await connect();
 
-      const added = await call(client, "sources", { action: "add", kind: "local", id: "mine", path: dir });
+      const result = await call(client, "sources", { action: "add", kind: "local", id: "mine", path: dir });
       const loaded = await call(client, "load", { id: "my-skill" });
 
-      expect(added.isError).toBeFalsy();
-      expect((added.structuredContent as SourcesStructured).sources).toContain("mine (local)");
-      expect(loaded.isError).toBeFalsy();
-      expect(loaded.content[0]?.text).toContain("Mine body.");
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain("admin CLI");
+      expect(await listedSources(client)).toEqual(["anthropics (local)"]);
+      expect(loaded.isError).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("remove refuses a local source and keeps it configured", async () => {
+    const client = await connect();
+
+    const result = await call(client, "sources", { action: "remove", id: "anthropics" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("admin CLI");
+    expect(await listedSources(client)).toEqual(["anthropics (local)"]);
+    expect((await call(client, "load", { id: "pdf" })).isError).toBeFalsy();
+  });
+
+  test("remove refuses a command source and keeps it configured", async () => {
+    await sandbox.writeConfig({
+      sources: [
+        {
+          kind: "cli",
+          id: "agent-desktop",
+          list: ["agent-desktop", "skills", "list"],
+          get: ["agent-desktop", "skills", "get"],
+          namesPath: "data.skills",
+          contentPath: "data.content",
+        },
+      ],
+    });
+    const client = await connect();
+
+    const result = await call(client, "sources", { action: "remove", id: "agent-desktop" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("admin CLI");
+    expect(await listedSources(client)).toEqual(["agent-desktop (cli)"]);
+  });
+
+  test("add and remove of a GitHub source still work through the tool, from an offline fixture", async () => {
+    const root = await makeTempDir();
+    try {
+      const remote = await makeRemote(root, "acme", "skills");
+      await remote.push(
+        { "skills/my-skill/SKILL.md": "---\nname: my-skill\ndescription: Does the acme thing.\n---\n\nAcme body.\n" },
+        "add skill",
+      );
+      const adapters = { ...defaultAdapters, github: createGithubAdapter({ baseUrl: remote.baseUrl }) };
+      const client = await connect({ adapters });
+
+      const added = await call(client, "sources", { action: "add", kind: "github", id: "acme", repo: "acme/skills" });
+      const loaded = await call(client, "load", { id: "my-skill" });
+      const removed = await call(client, "sources", { action: "remove", id: "acme" });
+
+      expect(added.isError).toBeFalsy();
+      expect((added.structuredContent as SourcesStructured).sources).toContain("acme (github)");
+      expect(loaded.content[0]?.text).toContain("Acme body.");
+      expect(removed.isError).toBeFalsy();
+      expect(await listedSources(client)).toEqual(["anthropics (local)"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

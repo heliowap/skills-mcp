@@ -55,7 +55,7 @@ export interface DecisionModel {
   decide(req: { state: Record<string, string>; questions: Question[]; signal?: AbortSignal }): Promise<Map<string, Answer>>;
 }
 
-/** Per-model confidence thresholds, taken from config. */
+/** Per-model thresholds, taken from config. */
 export interface Thresholds { action: number; named: number; fits: number } // per model, from config
 /** Lexical (BM25-style) ranker used as the first pass and as the fallback. */
 export interface LexicalRanker { rank(task: string, skills: readonly SkillRecord[], k: number): { id: SkillId; score: number }[] }

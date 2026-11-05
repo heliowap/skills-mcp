@@ -14,6 +14,7 @@ import {
   type SyncOutcome,
   syncSources,
 } from "./sources/registry";
+import { SourceError } from "./sources/shared";
 import type { Catalog, Classifier, SourceSpec } from "./types";
 
 export interface AppOptions {
@@ -107,7 +108,7 @@ export async function createApp(options: AppOptions = {}): Promise<App> {
         await addSource(spec);
         const [outcome] = await syncSources({ ids: [spec.id], adapters });
         await rebuild();
-        if (!outcome) throw new Error(`source ${spec.id} vanished during sync`);
+        if (!outcome) throw new SourceError(`source ${spec.id} vanished during sync`);
         return outcome;
       }),
     sync: (ids) =>

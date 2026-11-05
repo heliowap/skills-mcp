@@ -8,7 +8,7 @@ export const SERVER_NAME = "skills";
 export const SERVER_VERSION: string = pkg.version;
 
 /** Sent to every harness on initialize; one line, because it sits in the model's context on every step. */
-export const INSTRUCTIONS = "Call find with the task before non-trivial work, then load the suggested skill.";
+export const INSTRUCTIONS = "Call find before non-trivial work; load the suggested skill.";
 
 /** One server over one app. `serveStdio` calls this once per connection. */
 export function buildServer(app: App): McpServer {

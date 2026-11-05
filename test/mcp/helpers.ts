@@ -64,11 +64,19 @@ export function useSandbox(config?: unknown): Sandbox {
   return sandbox;
 }
 
+/** Decision-model credentials that name no common prefix; children never receive them. */
+const MODEL_KEY_NAMES = new Set(["AI_GATEWAY_API_KEY", "OPENROUTER_API_KEY"]);
+
+/** Kill limit for every child process the tests spawn, so a hung child fails a test instead of the suite. */
+export const CHILD_TIMEOUT_MS = 20_000;
+
 /** The parent environment minus decision-model keys and skills-mcp settings, plus this sandbox's paths. */
 export function childEnv(sandbox: Sandbox): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined || key.startsWith("TYPESAFE_") || key.startsWith("SKILLS_MCP_")) continue;
+    if (value === undefined || key.startsWith("TYPESAFE_") || key.startsWith("SKILLS_MCP_") || MODEL_KEY_NAMES.has(key)) {
+      continue;
+    }
     env[key] = value;
   }
   env.SKILLS_MCP_CONFIG = sandbox.configFile;
@@ -111,8 +119,15 @@ export class StdioServer {
   readonly stdoutLines: string[] = [];
   stderr = "";
 
-  constructor(args: string[], env: Record<string, string>) {
-    this.child = Bun.spawn(["bun", ...args], { cwd: REPO_ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  constructor(args: string[], env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS) {
+    this.child = Bun.spawn(["bun", ...args], {
+      cwd: REPO_ROOT,
+      env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+    });
     void this.readStdout();
     void this.readStderr();
   }
@@ -129,6 +144,9 @@ export class StdioServer {
         newline = this.buffer.indexOf("\n");
       }
     }
+    // Stdout ends when the child exits or is killed at its timeout: no answer can arrive any more.
+    for (const waiter of this.waiting.values()) waiter.reject(new Error("server closed stdout before answering"));
+    this.waiting.clear();
   }
 
   private async readStderr(): Promise<void> {

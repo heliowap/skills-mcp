@@ -13,6 +13,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { createApp } from "../src/app";
 import { connectInProcess } from "../src/mcp/inprocess";
 import { INSTRUCTIONS, SERVER_NAME, buildServer } from "../src/mcp/server";
@@ -23,7 +24,29 @@ export const FIXED_TOKEN_LIMIT = 320;
 const DESCRIPTION_LIMIT = 120;
 const CHARACTERS_PER_TOKEN = 4;
 const MAX_RENDER_DEPTH = 8;
+// The `/** ` and ` */` frame around a one-line JSDoc, in characters.
+const JSDOC_FRAME_CHARS = 7;
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/** tools/list does not match what the renderer can read. */
+class BudgetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BudgetError";
+  }
+}
+
+/** The shape of each entry in a tools/list result; the schemas are checked further by the renderer. */
+const ToolsListSchema = z.object({
+  tools: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      inputSchema: z.unknown(),
+      outputSchema: z.unknown().optional(),
+    }),
+  ),
+});
 
 /** The JSON Schema subset this renderer reads. Only tools/list output enters through it. */
 interface JsonSchema {
@@ -120,7 +143,7 @@ export async function measure(): Promise<Measurement> {
     const app = await createApp({ env: {} });
     const client = await connectInProcess(buildServer(app));
     try {
-      const { tools } = await client.request<{ tools: (ToolShape & { name: string })[] }>("tools/list");
+      const { tools } = await client.request("tools/list", ToolsListSchema);
       const instructions = client.initialized.instructions ?? "";
       const catalog = [
         namespaceLine(SERVER_NAME, tools.length),
@@ -162,9 +185,17 @@ if (import.meta.main) process.exitCode = await main();
 
 // ---- schema rendering (port of tool-schema.ts) ----
 
-/** tools/list JSON enters the renderer here; nothing else is cast. */
+/** tools/list JSON enters the renderer here. A missing schema renders as unconstrained; anything else must be an object. */
 function asSchema(value: unknown): JsonSchema {
-  return (value ?? {}) as JsonSchema;
+  if (value === undefined) return {};
+  if (!isSchemaObject(value)) throw new BudgetError("tools/list: a tool schema is not a JSON schema object");
+  return value;
+}
+
+/** Shallow check: an object with a `type` or `properties` field, or an empty object (no constraints). */
+function isSchemaObject(value: unknown): value is JsonSchema {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.keys(value).length === 0 || "type" in value || "properties" in value;
 }
 
 function renderTypeScript(schema: JsonSchema, pretty: boolean): string {
@@ -290,7 +321,7 @@ function docLines(schema: JsonSchema, width: number): string[] {
   while (lines.length > 0 && (lines[lines.length - 1] ?? "").trim() === "") lines.pop();
   const first = lines[0] ?? "";
   const inline = lines.length === 1 ? `${first}${first.endsWith(".") ? "" : "."} ${summary}` : summary;
-  return summary && lines.length === 1 && !summary.includes("\n") && width + inline.length + 7 <= 120
+  return summary && lines.length === 1 && !summary.includes("\n") && width + inline.length + JSDOC_FRAME_CHARS <= DESCRIPTION_LIMIT
     ? [inline]
     : [...lines, ...(summary ? summary.split("\n") : [])];
 }
@@ -314,7 +345,7 @@ function jsdoc(schema: JsonSchema, pad: string): string {
   if (content.length === 0) return "";
   const escaped = content.map((line) => line.replaceAll("*/", "* /"));
   const only = escaped[0];
-  if (escaped.length === 1 && only !== undefined && pad.length + only.length + 7 <= 120) {
+  if (escaped.length === 1 && only !== undefined && pad.length + only.length + JSDOC_FRAME_CHARS <= DESCRIPTION_LIMIT) {
     return `${pad}/** ${only} */\n`;
   }
   const body = escaped.map((line) => `${pad} *${line === "" ? "" : ` ${line}`}`).join("\n");

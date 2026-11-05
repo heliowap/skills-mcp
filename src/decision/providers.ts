@@ -1,13 +1,10 @@
 import { z } from "zod";
-import { ConfigSchema } from "../config";
+import { ThresholdsSchema } from "../config";
 import type { Thresholds } from "../types";
 import table from "./providers.json";
 
 /** Which AI SDK factory builds the model. */
 const ProviderSchema = z.enum(["typesafe-ai", "gateway"]);
-
-/** The config's own threshold schema, so bounds and defaults are declared once. */
-const ThresholdsSchema = ConfigSchema.shape.decision.unwrap().shape.thresholds.unwrap().valueType;
 
 const EntrySchema = z.object({
   provider: ProviderSchema,

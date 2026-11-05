@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { readFile, realpath, rm } from "node:fs/promises";
+import { readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createCliAdapter } from "../../src/sources/cli";
 import { MAX_DETAIL_CHARS, SourceError } from "../../src/sources/shared";
@@ -273,18 +273,56 @@ describe("cli adapter", () => {
     expect(result.warnings.join("\n")).toContain("more than 1 references");
   });
 
-  test("a sync that runs past its time budget stops listing and warns", async () => {
+  test("a sync that runs past its time budget fails and leaves no partial cache behind", async () => {
     const file = await responses({
       "skills list": listOf("a-one", "b-two"),
       "skills get a-one": contentOf("a"),
       "skills get b-two": contentOf("b"),
     });
 
-    const result = await createCliAdapter({ syncBudgetMs: 1 }).sync(fakeSpec(file), cache, { offline: false });
+    const err = await createCliAdapter({ syncBudgetMs: 1 })
+      .sync(fakeSpec(file), cache, { offline: false })
+      .catch((e: unknown) => e);
 
+    expect(err).toBeInstanceOf(SourceError);
+    expect((err as Error).message).toContain("time budget");
     expect(existsSync(join(cache, "cli", "agent", "a-one"))).toBe(false);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toContain("time budget");
+  });
+
+  test("a sync that overruns its budget keeps the earlier full cache intact", async () => {
+    const adapter = createCliAdapter();
+    const full = await responses({
+      "skills list": listOf("a-one", "b-two"),
+      "skills get a-one": contentOf("original a"),
+      "skills get b-two": contentOf("original b"),
+    });
+    await adapter.sync(fakeSpec(full), cache, { offline: false });
+
+    // Every call of this CLI takes about 300 ms, so a 500 ms budget runs out after the first call or two.
+    const slow = join(root, "slow-cli.ts");
+    await writeFile(
+      slow,
+      [
+        "await Bun.sleep(300);",
+        `const run = Bun.spawnSync([process.execPath, ${JSON.stringify(FAKE_CLI)}, ${JSON.stringify(full)}, ...process.argv.slice(2)], { stdout: "pipe" });`,
+        "process.stdout.write(run.stdout);",
+        "process.exitCode = run.exitCode;",
+      ].join("\n"),
+    );
+    const slowSpec = {
+      ...fakeSpec(full),
+      list: [process.execPath, slow, "skills", "list"],
+      get: [process.execPath, slow, "skills", "get"],
+    };
+
+    const err = await createCliAdapter({ syncBudgetMs: 500 })
+      .sync(slowSpec, cache, { offline: false })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SourceError);
+    expect(await readFile(join(cache, "cli", "agent", "a-one", "SKILL.md"), "utf8")).toBe("original a");
+    expect(await readFile(join(cache, "cli", "agent", "b-two", "SKILL.md"), "utf8")).toBe("original b");
+    expect(await readdir(join(cache, "cli"))).toEqual(["agent"]);
   });
 
   test.skipIf(!process.env.SKILLS_MCP_LIVE_CLI)(
