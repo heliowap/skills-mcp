@@ -87,6 +87,28 @@ describe("buildCatalog: real repository layouts", () => {
     expect(warnings).toEqual([]);
   });
 
+  test("vercel: an upstream/ copy folds into its parent skill even under another frontmatter name", async () => {
+    const { catalog, warnings } = await buildCatalog([source("vercel", [repo("vercel")])]);
+
+    expect(catalog.get("react-best-practices")?.relPath).toBe("skills/react-best-practices");
+    expect(catalog.get("upstream")).toBeUndefined();
+    expect(catalog.shadowed()).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("a copy under upstream/ or plugins/ folds into the skill that holds it, whatever its frontmatter name", async () => {
+    const base = await tree({
+      "alpha/SKILL.md": skillMd("alpha", "Original."),
+      "alpha/upstream/SKILL.md": skillMd("renamed-elsewhere", "Vendored under upstream."),
+      "beta/SKILL.md": skillMd("beta", "Original."),
+      "beta/plugins/kit/skills/gamma/SKILL.md": skillMd("gamma-upstream", "Vendored under plugins."),
+    });
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.all().map((r) => r.id)).toEqual(["alpha", "beta"]);
+    expect(warnings).toEqual([]);
+  });
+
   test("hermes: skills/<category>/<name> and optional-skills/ are both found", async () => {
     const { catalog } = await buildCatalog([source("hermes", [repo("hermes")])]);
 
@@ -332,13 +354,83 @@ describe("buildCatalog: path containment and limits", () => {
     expect(warned(warnings, "big", "512")).toBe(true);
   });
 
-  test("a skill whose files exceed 16 MiB in total is rejected", async () => {
-    const base = await tree({ "heavy/SKILL.md": skillMd("heavy", "Too large."), "heavy/data.bin": "" });
-    await truncate(join(base, "heavy", "data.bin"), 17 * 1024 * 1024);
+  test("text resources that together exceed 16 MiB reject the skill", async () => {
+    const files: Record<string, string> = { "heavy/SKILL.md": skillMd("heavy", "Too much text.") };
+    const chunk = "t".repeat(256 * 1024);
+    for (let i = 0; i < 65; i++) files[`heavy/part${i}.txt`] = chunk;
+    const base = await tree(files);
     const { catalog, warnings } = await buildCatalog([source("s", [base])]);
 
     expect(catalog.get("heavy")).toBeUndefined();
     expect(warned(warnings, "heavy", "16 MiB")).toBe(true);
+  });
+
+  test("a binary file of 17 MiB does not count toward the byte limit and is excluded with a warning", async () => {
+    const base = await tree({ "heavy/SKILL.md": skillMd("heavy", "Ships a binary."), "heavy/data.bin": "" });
+    await truncate(join(base, "heavy", "data.bin"), 17 * 1024 * 1024);
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.get("heavy")).toBeDefined();
+    expect((await catalog.load("heavy")).resources).toEqual([]);
+    expect(warned(warnings, "heavy/data.bin", "binary")).toBe(true);
+  });
+
+  test("a binary resource is left out of the resource list while the skill and its text resources are kept", async () => {
+    const base = await tree({
+      "x/SKILL.md": skillMd("x", "Ships a binary."),
+      "x/guide.md": "Guide.\n",
+      "x/bin/tool": new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x02]),
+    });
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect((await catalog.load("x")).resources).toEqual(["guide.md"]);
+    expect(await catalog.read("x", "bin/tool")).toEqual({ error: "missing" });
+    expect(await catalog.read("x", "guide.md")).toEqual({ text: "Guide.\n" });
+    expect(warned(warnings, "x/bin/tool", "binary")).toBe(true);
+  });
+
+  test("a resource above 256 KiB is left out of the resource list with a warning", async () => {
+    const base = await tree({
+      "x/SKILL.md": skillMd("x", "Has a big text file."),
+      "x/big.js": "a".repeat(256 * 1024 + 1),
+    });
+    const { catalog, warnings } = await buildCatalog([source("s", [base])]);
+
+    expect((await catalog.load("x")).resources).toEqual([]);
+    expect(await catalog.read("x", "big.js")).toEqual({ error: "missing" });
+    expect(warned(warnings, "x/big.js", "256 KiB")).toBe(true);
+  });
+
+  test("a NUL byte past the first chunk is not caught at listing time, and read still refuses the file as binary", async () => {
+    const base = await tree({
+      "x/SKILL.md": skillMd("x", "Late NUL."),
+      "x/late.txt": `${"a".repeat(9000)}\u0000`,
+    });
+    const { catalog } = await buildCatalog([source("s", [base])]);
+
+    expect((await catalog.load("x")).resources).toEqual(["late.txt"]);
+    expect(await catalog.read("x", "late.txt")).toEqual({ error: "binary" });
+  });
+
+  test("a skill's excluded resources are summarized in one warning that counts them and names the first few", async () => {
+    const files: Record<string, string | Uint8Array> = { "assets/SKILL.md": skillMd("assets", "Many binary assets.") };
+    for (let i = 0; i < 7; i++) files[`assets/img${i}.png`] = new Uint8Array([0x89, 0x00, 0x47]);
+    const base = await tree(files);
+    const { warnings } = await buildCatalog([source("s", [base])]);
+    const notes = warnings.filter((w) => w.includes("not served"));
+
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("assets: 7 resources not served (7 binary)");
+    expect(notes[0]).toContain("assets/img0.png");
+    expect(notes[0]).toContain("and 2 more");
+  });
+
+  test("a shadowed copy's excluded resources are not reported, only the winner's", async () => {
+    const first = await tree({ "x/SKILL.md": skillMd("x", "Winner."), "x/bin/tool": new Uint8Array([0, 1, 2]) });
+    const second = await tree({ "x/SKILL.md": skillMd("x", "Shadowed."), "x/bin/tool": new Uint8Array([0, 1, 2]) });
+    const { warnings } = await buildCatalog([source("first", [first]), source("second", [second])]);
+
+    expect(warnings.filter((w) => w.includes("binary"))).toHaveLength(1);
   });
 });
 
@@ -421,17 +513,7 @@ describe("Catalog.read", () => {
     expect(await catalog.read("x", "link.txt")).toEqual({ error: "outside-root" });
   });
 
-  test("reports binary files", async () => {
-    const base = await tree({
-      "x/SKILL.md": skillMd("x", "Has a binary."),
-      "x/blob.bin": new Uint8Array([0x89, 0x50, 0x00, 0x47, 0x0d, 0x0a]),
-    });
-    const { catalog } = await buildCatalog([source("s", [base])]);
-
-    expect(await catalog.read("x", "blob.bin")).toEqual({ error: "binary" });
-  });
-
-  test("accepts exactly 256 KiB and reports anything larger as too-large", async () => {
+  test("a file of exactly 256 KiB is served, and a larger one is not served at all", async () => {
     const base = await tree({
       "x/SKILL.md": skillMd("x", "Size limits."),
       "x/exact.txt": "a".repeat(256 * 1024),
@@ -440,7 +522,7 @@ describe("Catalog.read", () => {
     const { catalog } = await buildCatalog([source("s", [base])]);
 
     expect(await catalog.read("x", "exact.txt")).toEqual({ text: "a".repeat(256 * 1024) });
-    expect(await catalog.read("x", "over.txt")).toEqual({ error: "too-large" });
+    expect(await catalog.read("x", "over.txt")).toEqual({ error: "missing" });
   });
 
   test("refuses hidden files and git metadata inside a skill", async () => {

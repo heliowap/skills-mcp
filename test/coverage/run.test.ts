@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCatalog } from "../../src/catalog";
 import type { Catalog } from "../../src/types";
-import { runCoverage } from "../../scripts/coverage";
+import { exitCodeFor, formatReport, runCoverage } from "../../scripts/coverage";
 
 const ANTHROPICS = join(import.meta.dir, "..", "fixtures", "repos", "anthropics");
 const PDF_SKILL = join(ANTHROPICS, "skills", "pdf", "SKILL.md");
@@ -27,10 +27,16 @@ async function catalogOf(...sources: { sourceId: string; root: string }[]): Prom
   return built.catalog;
 }
 
-function openCodeResponse(skills: { id: string; path: string }[]): string {
+/** OpenCode's listing. A skill gets a description unless `description` is null, which OpenCode leaves out. */
+function openCodeResponse(skills: { id: string; path: string; description?: string | null }[]): string {
   return JSON.stringify({
     location: { directory: "/repo" },
-    data: skills.map((s) => ({ ...s, name: s.id, content: "" })),
+    data: skills.map(({ description, ...s }) => ({
+      ...s,
+      name: s.id,
+      ...(description === null ? {} : { description: description ?? "A test skill." }),
+      content: "",
+    })),
   });
 }
 
@@ -117,6 +123,20 @@ describe("runCoverage", () => {
     expect(report.unresolved.map((u) => u.id)).toEqual(["gone"]);
     expect(report.builtins).toEqual(["opencode"]);
     expect(report.missing).toEqual([]);
+  });
+
+  test("a skill OpenCode lists without a description is reported apart: not missing, not compared, not an exit failure", async () => {
+    const report = await runCoverage({
+      readOpenCode: async () =>
+        openCodeResponse([{ id: "BRAND-KIT-GUARDRAILS", path: join(scratch, "BRAND-KIT-GUARDRAILS.md"), description: null }]),
+      catalog: await catalogOf({ sourceId: "anthropics", root: ANTHROPICS }),
+    });
+
+    expect(report.notAdvertised).toEqual(["BRAND-KIT-GUARDRAILS"]);
+    expect(report.missing).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+    expect(exitCodeFor(report)).toBe(0);
+    expect(formatReport(report)).toContain("not advertised by OpenCode (no description): 1 (BRAND-KIT-GUARDRAILS)");
   });
 
   test("shadowed skills of the catalog are reported with the winning source", async () => {

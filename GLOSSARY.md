@@ -21,7 +21,7 @@ The instructions in `SKILL.md` after the frontmatter.
 _Avoid_: Content, prompt
 
 **Resource**:
-Any file inside a skill directory other than `SKILL.md`, read only when the body points to it.
+A text file inside a skill directory, other than `SKILL.md`, that the server can serve when the body points to it; binary and oversized files are not resources.
 _Avoid_: Asset, attachment
 
 **Skill directory**:

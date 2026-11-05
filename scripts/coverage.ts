@@ -2,6 +2,8 @@
 // OpenCode's list is the reference. A skill OpenCode registers that the catalog does not serve is
 // missing and fails the run; every other difference is reported but does not fail it. Builtins
 // (paths under /builtin/) stay in OpenCode's native list and are reported apart (decision D1).
+// A skill OpenCode lists without a description is never advertised to the agent, so it is reported
+// apart the same way (decision 3 of the P6 package).
 //
 // Two skills are the same when they sit in the same directory, or when their SKILL.md bytes are
 // identical: a Vercel plugin copy in OpenCode's npm cache and our pinned checkout of the same
@@ -31,6 +33,8 @@ export class CoverageError extends Error {
 export interface OpenCodeSkill {
   id: string;
   path: string;
+  /** Absent or blank when OpenCode has no description for the skill. */
+  description?: string;
 }
 
 /** A skill's directory and the digest of its SKILL.md, from either side of the comparison. */
@@ -63,6 +67,8 @@ export interface Unresolved {
 export interface CoverageReport {
   opencodeCount: number;
   builtins: string[];
+  /** OpenCode skills with no description: registered, never advertised, not compared. */
+  notAdvertised: string[];
   matched: string[];
   sameContent: Difference[];
   differentWinner: Difference[];
@@ -73,19 +79,23 @@ export interface CoverageReport {
 }
 
 export interface DiffInput {
-  /** OpenCode's non-builtin skills. */
+  /** OpenCode's non-builtin skills that have a description. */
   opencode: SkillLocation[];
   builtins: string[];
+  /** OpenCode's skills without a description, by id. */
+  notAdvertised?: string[];
   served: ServedSkill[];
   shadowed: readonly ShadowedSkill[];
   unresolved?: Unresolved[];
 }
 
 const OpenCodeListing = z.object({
-  data: z.array(z.object({ id: z.string().min(1), path: z.string().min(1) })),
+  data: z.array(
+    z.object({ id: z.string().min(1), path: z.string().min(1), description: z.string().optional() }),
+  ),
 });
 
-/** Reads the id and path of each skill from the output of `opencode api get /api/skill`. */
+/** Reads the id, path and description of each skill from the output of `opencode api get /api/skill`. */
 export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
   let raw: unknown;
   try {
@@ -98,18 +108,25 @@ export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
     const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
     throw new CoverageError(`opencode api output has no valid skill list: ${details.join("; ")}`);
   }
-  return parsed.data.data.map(({ id, path }) => ({ id, path }));
+  return parsed.data.data.map(({ id, path, description }) => ({ id, path, description }));
+}
+
+/** OpenCode advertises a skill to the agent only when it has a description. */
+function isAdvertised(skill: OpenCodeSkill): boolean {
+  return (skill.description ?? "").trim() !== "";
 }
 
 /** Compares OpenCode's skills with the served ones, by skill id. Output is sorted by id. */
 export function diffCoverage(input: DiffInput): CoverageReport {
   const served = new Map(input.served.map((skill) => [skill.id, skill]));
-  const known = new Set(input.opencode.map((skill) => skill.id));
+  const notAdvertised = [...(input.notAdvertised ?? [])].sort(compareIds);
+  const known = new Set([...input.opencode.map((skill) => skill.id), ...notAdvertised]);
   const builtins = new Set(input.builtins);
 
   const report: CoverageReport = {
-    opencodeCount: input.opencode.length,
+    opencodeCount: input.opencode.length + notAdvertised.length,
     builtins: [...input.builtins],
+    notAdvertised,
     matched: [],
     sameContent: [],
     differentWinner: [],
@@ -161,11 +178,13 @@ export interface CoverageDeps {
 export async function runCoverage(deps: CoverageDeps): Promise<CoverageReport> {
   const listed = parseOpenCodeSkills(await deps.readOpenCode());
   const builtins = listed.filter((skill) => isBuiltin(skill)).map((skill) => skill.id);
+  const notAdvertised = listed.filter((skill) => !isBuiltin(skill) && !isAdvertised(skill)).map((skill) => skill.id);
 
+  // Only advertised skills are located and compared; the others are reported apart, unread.
   const opencode: SkillLocation[] = [];
   const unresolved: Unresolved[] = [];
   for (const skill of listed) {
-    if (isBuiltin(skill)) continue;
+    if (isBuiltin(skill) || !isAdvertised(skill)) continue;
     try {
       opencode.push(await locateOpenCodeSkill(skill));
     } catch (err) {
@@ -183,7 +202,7 @@ export async function runCoverage(deps: CoverageDeps): Promise<CoverageReport> {
     });
   }
 
-  return diffCoverage({ opencode, builtins, served, shadowed: deps.catalog.shadowed(), unresolved });
+  return diffCoverage({ opencode, builtins, notAdvertised, served, shadowed: deps.catalog.shadowed(), unresolved });
 }
 
 /** Plain text for the terminal: one summary line per category, then the ids that need attention. */
@@ -191,6 +210,7 @@ export function formatReport(report: CoverageReport): string {
   const lines = [
     `OpenCode skills: ${report.opencodeCount}`,
     `builtins (reported apart, not compared): ${report.builtins.length}${report.builtins.length > 0 ? ` (${report.builtins.join(", ")})` : ""}`,
+    `not advertised by OpenCode (no description): ${report.notAdvertised.length}${report.notAdvertised.length > 0 ? ` (${report.notAdvertised.join(", ")})` : ""}`,
     `matched: ${report.matched.length} same directory, ${report.sameContent.length} same SKILL.md in another directory`,
     `missing: ${report.missing.length}`,
     `different-winner: ${report.differentWinner.length}`,
@@ -225,7 +245,11 @@ async function digestOf(file: string): Promise<string> {
 }
 
 function byId(a: { id: string }, b: { id: string }): number {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return compareIds(a.id, b.id);
+}
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Runs `opencode api get` for the repository at `cwd`. The argv is passed without a shell. */

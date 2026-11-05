@@ -2,7 +2,7 @@
 // Skill content is untrusted: it is parsed and read, never executed.
 
 import type { Stats } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { basename, relative, resolve, sep } from "node:path";
 import { parseFrontmatter } from "./skill/frontmatter";
 import { SKILL_FILE, type SkillDirectory, resolveInside, scanRoot } from "./skill/scan";
@@ -29,11 +29,16 @@ export interface BuiltCatalog {
 interface Accepted {
   record: SkillRecord;
   resources: string[];
+  /** Warnings about files left out of `resources`. Reported only if this entry wins its skill id. */
+  resourceNotes: string[];
   /** True when the path runs through `upstream/` or `plugins/`: vendored copies lose ties. */
   vendored: boolean;
   depth: number;
   rootIndex: number;
 }
+
+/** Bytes read from the start of a resource to decide whether it is binary. */
+const BINARY_PROBE_BYTES = 8 * 1024;
 
 /** Unknown skill or unreadable SKILL.md. The message names the skill id and the file. */
 export class CatalogError extends Error {
@@ -54,10 +59,11 @@ export interface BuildOptions {
 
 /**
  * Builds the catalog. Sources are taken in the given order: an earlier source keeps a skill id
- * and later ones are reported as shadowed. Within a source, a vendored copy (under `upstream/`
- * or `plugins/`) folds into the original that shares its frontmatter name; distinct skills keep
+ * and later ones are reported as shadowed. A vendored copy (under `upstream/` or `plugins/`) of a
+ * skill directory in the same source folds into that skill silently (see vendorParent); any
+ * other vendored copy folds by frontmatter name (see foldVendoredCopies). Distinct skills keep
  * their own entries and only a shared leaf id makes them compete. Every skill that is dropped
- * for any reason other than folding a vendored copy produces a warning.
+ * for any other reason produces a warning.
  */
 export async function buildCatalog(sources: MaterializedSource[], options: BuildOptions = {}): Promise<BuiltCatalog> {
   const warnings: string[] = [];
@@ -73,7 +79,10 @@ export async function buildCatalog(sources: MaterializedSource[], options: Build
     for (const [rootIndex, root] of source.roots.entries()) {
       const scan = await scanRoot(root, { followOutsideLinks });
       warnings.push(...scan.warnings.map((w) => `${tag} ${w}`));
+      const skillPaths = new Set(scan.directories.map((d) => d.relPath));
       for (const directory of scan.directories) {
+        const parent = vendorParent(directory.relPath);
+        if (parent !== undefined && skillPaths.has(parent)) continue;
         const result = await accept(source, directory, rootIndex);
         warnings.push(...result.warnings.map((w) => `${tag} ${w}`));
         if (result.entry) found.push(result.entry);
@@ -97,6 +106,7 @@ export async function buildCatalog(sources: MaterializedSource[], options: Build
         );
       } else {
         winners.set(id, entry);
+        warnings.push(...entry.resourceNotes.map((w) => `${tag} ${w}`));
       }
     }
   }
@@ -109,9 +119,21 @@ function where(entry: Accepted): string {
 }
 
 /**
- * Folds vendored copies by frontmatter name. A copy under `upstream/` or `plugins/` is dropped
- * when an original with the same name exists; with only copies, the best one stands for them all.
- * Originals that share a name are distinct skills and are all kept.
+ * The skill directory a vendored copy belongs to: the parent of its first `upstream/` or
+ * `plugins/` segment. Undefined when the path has neither. A frontmatter name can differ from the
+ * directory's (the Vercel plugin's `react-best-practices/upstream/SKILL.md` declares another name),
+ * so this rule follows the layout, not the name.
+ */
+function vendorParent(relPath: string): string | undefined {
+  const segments = relPath.split("/");
+  const at = segments.findIndex((s) => s === "upstream" || s === "plugins");
+  return at === -1 ? undefined : segments.slice(0, at).join("/");
+}
+
+/**
+ * Folds the remaining vendored copies by frontmatter name. A copy under `upstream/` or `plugins/`
+ * is dropped when an original with the same name exists; with only copies, the best one stands
+ * for them all. Originals that share a name are distinct skills and are all kept.
  */
 function foldVendoredCopies(entries: Accepted[]): Accepted[] {
   const groups = new Map<string, Accepted[]>();
@@ -186,11 +208,10 @@ async function accept(
   const id = leaf || basename(directory.real);
   if (!isValidId(id)) return reject(`invalid skill id "${sanitizeInline(id)}"`);
 
+  // The file-count limit covers every file, binary ones included.
   if (directory.files.length > MAX_FILES_PER_SKILL) {
     return reject(`more than ${MAX_FILES_PER_SKILL} files`);
   }
-  const totalBytes = directory.files.reduce((sum, f) => sum + f.size, 0);
-  if (totalBytes > MAX_SKILL_BYTES) return reject(`more than ${mebibytes(MAX_SKILL_BYTES)} of files`);
 
   const text = await readText(directory.real, SKILL_FILE, MAX_SKILL_BYTES);
   if (!text.ok) return reject(`SKILL.md is ${text.error}`);
@@ -206,6 +227,30 @@ async function accept(
   if (typeof rawDescription !== "string") return reject("missing description");
   const description = sanitizeDescription(rawDescription);
   if (description.text === "") return reject("empty description");
+
+  // Only resources that can be served count toward the byte limit: binary and oversized files are left out.
+  const resources: string[] = [];
+  const excluded: Excluded[] = [];
+  const skillFile = directory.files.find((f) => f.relPath === SKILL_FILE);
+  let bytes = skillFile?.size ?? 0;
+  const others = directory.files.filter((f) => f.relPath !== SKILL_FILE).sort((a, b) => compareText(a.relPath, b.relPath));
+  for (const file of others) {
+    const label = sanitizeInline(directory.relPath ? `${directory.relPath}/${file.relPath}` : file.relPath);
+    // Probed before the size check: the probe reads 8 KiB whatever the size, so a large binary is named as binary.
+    const kind = await probeKind(directory.real, file.relPath);
+    if (kind !== "text") {
+      excluded.push({ label, reason: kind });
+      continue;
+    }
+    if (file.size > MAX_READ_BYTES) {
+      excluded.push({ label, reason: `larger than ${MAX_READ_BYTES / 1024} KiB` });
+      continue;
+    }
+    resources.push(file.relPath);
+    bytes += file.size;
+  }
+  if (bytes > MAX_SKILL_BYTES) return reject(`more than ${mebibytes(MAX_SKILL_BYTES)} of text files`);
+  const resourceNotes = excluded.length > 0 ? [excludedNote(sanitizeInline(directory.relPath || "."), excluded)] : [];
 
   const warnings: string[] = [];
   if (parsed.lenient) {
@@ -225,13 +270,65 @@ async function accept(
     revision: source.revision,
     excerpt: stripControls(truncateUnits(parsed.body, MAX_EXCERPT)),
   };
-  const resources = directory.files.map((f) => f.relPath).filter((p) => p !== SKILL_FILE).sort();
-  const vendored = directory.relPath.split("/").some((s) => s === "upstream" || s === "plugins");
+  const vendored = vendorParent(directory.relPath) !== undefined;
 
   return {
-    entry: { record, resources, vendored, depth: directory.relPath === "" ? 0 : directory.relPath.split("/").length, rootIndex },
+    entry: {
+      record,
+      resources,
+      resourceNotes,
+      vendored,
+      depth: directory.relPath === "" ? 0 : directory.relPath.split("/").length,
+      rootIndex,
+    },
     warnings,
   };
+}
+
+type ResourceKind = "text" | "binary" | "unreadable";
+
+/** A resource of a skill that is not served, and why. */
+interface Excluded {
+  label: string;
+  reason: string;
+}
+
+/** Names shown in a skill's excluded-resources warning before the rest are counted. */
+const EXCLUDED_NAMES = 5;
+
+/**
+ * One warning per skill: how many of its resources are not served, why, and the first few names.
+ * A skill with hundreds of binary assets must not flood the warnings every tool call returns.
+ */
+function excludedNote(dir: string, excluded: Excluded[]): string {
+  const counts = new Map<string, number>();
+  for (const item of excluded) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  const summary = [...counts].map(([reason, n]) => `${n} ${reason}`).join(", ");
+  const names = excluded.slice(0, EXCLUDED_NAMES).map((item) => item.label).join(", ");
+  const more = excluded.length > EXCLUDED_NAMES ? `, and ${excluded.length - EXCLUDED_NAMES} more` : "";
+  const noun = excluded.length === 1 ? "resource" : "resources";
+  return `${dir}: ${excluded.length} ${noun} not served (${summary}): ${names}${more}`;
+}
+
+/**
+ * Classifies a resource from its first chunk: a NUL byte means binary. A large file is never read
+ * whole here; `readText` still checks the full content when the resource is served.
+ */
+async function probeKind(base: string, relPath: string): Promise<ResourceKind> {
+  const found = await resolveInside(base, relPath);
+  if (!found.ok) return "unreadable";
+  try {
+    const handle = await open(found.real, "r");
+    try {
+      const chunk = new Uint8Array(BINARY_PROBE_BYTES);
+      const { bytesRead } = await handle.read(chunk, 0, BINARY_PROBE_BYTES, 0);
+      return chunk.subarray(0, bytesRead).includes(0) ? "binary" : "text";
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return "unreadable";
+  }
 }
 
 /** `unreadable` is a file that exists but cannot be read (permissions); `read` reports it as missing. */

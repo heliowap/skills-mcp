@@ -25,6 +25,14 @@ class UsageError extends Error {
   }
 }
 
+/** A source spec given on the command line that is not valid JSON or fails the source schema. */
+class SourceSpecError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SourceSpecError";
+  }
+}
+
 // The same validation the config file gets: one schema, declared in config.ts.
 const SourceSpecSchema = ConfigSchema.shape.sources.unwrap().element;
 
@@ -78,12 +86,12 @@ function parseSpec(text: string): SourceSpec {
   try {
     raw = JSON.parse(text);
   } catch {
-    throw new Error("source spec is not valid JSON");
+    throw new SourceSpecError("source spec is not valid JSON");
   }
   const parsed = SourceSpecSchema.safeParse(raw);
   if (!parsed.success) {
     const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
-    throw new Error(`invalid source spec: ${details.join("; ")}`);
+    throw new SourceSpecError(`invalid source spec: ${details.join("; ")}`);
   }
   return parsed.data;
 }
