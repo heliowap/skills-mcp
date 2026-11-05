@@ -24,6 +24,14 @@ _Avoid_: Content, prompt
 Any file inside a skill directory other than `SKILL.md`, read only when the body points to it.
 _Avoid_: Asset, attachment
 
+**Skill directory**:
+A directory that holds a `SKILL.md`; the unit a source contributes to the catalog.
+_Avoid_: Skill folder, candidate
+
+**Vendored copy**:
+A second copy of a skill inside the same source, such as one under `upstream/` or `plugins/`, folded into the original.
+_Avoid_: Duplicate, mirror
+
 **Excerpt**:
 The opening of a skill's body, used to tell similar skills apart.
 _Avoid_: Preview, snippet
