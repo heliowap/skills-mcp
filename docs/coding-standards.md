@@ -26,7 +26,7 @@ Every skill, resource and source is untrusted data.
 - Run git with `GIT_TERMINAL_PROMPT=0`.
 - Read API keys from the environment by name at call time. Keep key values out of logs, errors, tool output and test snapshots.
 - A missing key makes a decision model unavailable, not an error: `find` falls back to the lexical ranker and says so in `ranker` and `reason`.
-- Retry only rate limits and overload (429, 529, 5xx) with bounded backoff; treat 401/403 as unauthorized and stop.
+- Retry only rate limits and transient overload (429, 502, 503, 504, 529) with bounded backoff; treat 401/403 as unauthorized and stop.
 
 ## MCP surface
 
