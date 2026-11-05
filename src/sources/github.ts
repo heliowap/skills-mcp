@@ -1,5 +1,6 @@
 import { stat, realpath, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
+import { sanitizeInline } from "../text";
 import type { MaterializedSource, SourceAdapter, SourceSpec } from "../types";
 import { GIT_TIMEOUT_MS, runGit } from "./git";
 import { SourceError, assertSegment, isSafeRelativePath } from "./shared";
@@ -9,11 +10,18 @@ export type GithubSourceSpec = Extract<SourceSpec, { kind: "github" }>;
 /** Sparse paths used when a github source sets none: every known layout keeps skills under `skills/`. */
 export const DEFAULT_GITHUB_PATHS = ["skills"];
 
+/** Longest GitHub owner, in characters. */
+export const MAX_OWNER_CHARS = 39;
+/** Longest GitHub repository name, in characters. */
+export const MAX_REPO_CHARS = 100;
+/** Longest branch or tag name accepted as a ref, in characters. */
+export const MAX_REF_CHARS = 200;
+
 const DEFAULT_BASE_URL = "https://github.com";
-const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const REPO_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const OWNER_RE = new RegExp(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,${MAX_OWNER_CHARS - 1}})$`);
+const REPO_RE = new RegExp(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,${MAX_REPO_CHARS - 1}}$`);
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
-const REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+const REF_RE = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,${MAX_REF_CHARS - 1}}$`);
 
 export interface GithubRepo {
   owner: string;
@@ -26,7 +34,9 @@ export interface GithubRepo {
  */
 export function parseGithubRepo(input: string): GithubRepo {
   const rejected = () =>
-    new SourceError(`invalid GitHub repository "${input}": expected owner/repo or https://github.com/owner/repo`);
+    new SourceError(
+      `invalid GitHub repository "${sanitizeInline(input)}": expected owner/repo or https://github.com/owner/repo`,
+    );
 
   let slug = input;
   if (/^https:\/\//i.test(input)) {
@@ -48,9 +58,8 @@ export function parseGithubRepo(input: string): GithubRepo {
     slug = url.pathname.slice(1);
   }
 
-  const parts = slug.split("/");
-  if (parts.length !== 2) throw rejected();
-  const [owner, rawRepo] = parts as [string, string];
+  const [owner, rawRepo, extra] = slug.split("/");
+  if (owner === undefined || rawRepo === undefined || extra !== undefined) throw rejected();
   const repo = rawRepo.endsWith(".git") ? rawRepo.slice(0, -".git".length) : rawRepo;
   if (!OWNER_RE.test(owner) || !REPO_RE.test(repo) || repo.includes("..")) throw rejected();
   return { owner, repo };
@@ -77,13 +86,15 @@ export function createGithubAdapter(options: GithubAdapterOptions = {}): SourceA
       const { owner, repo } = parseGithubRepo(spec.repo);
       const paths = spec.paths ?? DEFAULT_GITHUB_PATHS;
       for (const path of paths) {
-        if (!isSafeRelativePath(path)) throw new SourceError(`github source ${spec.id}: invalid path "${path}"`);
+        if (!isSafeRelativePath(path)) {
+          throw new SourceError(`github source ${spec.id}: invalid path "${sanitizeInline(path)}"`);
+        }
       }
       if (spec.sha !== undefined && !SHA_RE.test(spec.sha)) {
         throw new SourceError(`github source ${spec.id}: sha must be a full commit id`);
       }
       if (spec.ref !== undefined && (!REF_RE.test(spec.ref) || spec.ref.includes(".."))) {
-        throw new SourceError(`github source ${spec.id}: invalid ref "${spec.ref}"`);
+        throw new SourceError(`github source ${spec.id}: invalid ref "${sanitizeInline(spec.ref)}"`);
       }
 
       const dir = join(cacheDir, "github", spec.id);
@@ -162,15 +173,15 @@ async function resolveRoots(
     try {
       real = await realpath(join(dir, path));
     } catch {
-      warnings.push(`github source ${sourceId}: path "${path}" not found in ${slug}`);
+      warnings.push(`github source ${sourceId}: path "${sanitizeInline(path)}" not found in ${slug}`);
       continue;
     }
     if (!real.startsWith(realDir + sep)) {
-      warnings.push(`github source ${sourceId}: path "${path}" resolves outside the checkout`);
+      warnings.push(`github source ${sourceId}: path "${sanitizeInline(path)}" resolves outside the checkout`);
       continue;
     }
     if (!(await stat(real)).isDirectory()) {
-      warnings.push(`github source ${sourceId}: path "${path}" is not a directory`);
+      warnings.push(`github source ${sourceId}: path "${sanitizeInline(path)}" is not a directory`);
       continue;
     }
     roots.push(real);

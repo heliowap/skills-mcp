@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runArgv } from "../../src/sources/exec";
+import { commandEnv, runArgv } from "../../src/sources/exec";
 import { SourceError } from "../../src/sources/shared";
 
 const base = { timeoutMs: 10_000, maxStdoutBytes: 1024 * 1024 };
@@ -59,5 +59,27 @@ describe("runArgv", () => {
 
     expect(err).toBeInstanceOf(SourceError);
     expect((err as Error).message).toContain("definitely-not-a-real-program-xyz");
+  });
+
+  test("a program that cannot be started is named without markup", async () => {
+    const err = await runArgv(["<b>nope</b>-program"], base).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SourceError);
+    expect((err as Error).message).not.toContain("<b>");
+  });
+});
+
+describe("commandEnv", () => {
+  test("keeps only the allowlisted variables, so API keys stay in the parent", () => {
+    const env = commandEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      LANG: "en_US.UTF-8",
+      TYPESAFE_AI_API_KEY: "secret",
+      OPENAI_API_KEY: "other-secret",
+      GIT_DIR: "/repo/.git",
+    });
+
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/u", LANG: "en_US.UTF-8" });
   });
 });

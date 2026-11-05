@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { readFile, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createCliAdapter } from "../../src/sources/cli";
-import { SourceError } from "../../src/sources/shared";
-import { AGENT_DESKTOP_RESPONSES, FAKE_CLI, makeTempDir, writeJson } from "./helpers";
+import { MAX_DETAIL_CHARS, SourceError } from "../../src/sources/shared";
+import { AGENT_DESKTOP_RESPONSES, ENV_PROBE, FAKE_CLI, NOISY_FAILURE, makeTempDir, writeJson } from "./helpers";
 
 let root: string;
 let cache: string;
@@ -193,7 +193,101 @@ describe("cli adapter", () => {
     expect((err as Error).message).toContain("not cached");
   });
 
-  test.skipIf(!Bun.which("agent-desktop"))(
+  test("a failing command's stderr reaches the error sanitized and capped", async () => {
+    const spec = fakeSpec(await responses({}), { list: [process.execPath, NOISY_FAILURE] });
+
+    const err = await createCliAdapter().sync(spec, cache, { offline: false }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SourceError);
+    const { message } = err as SourceError;
+    expect(message).toContain("boom hi second");
+    expect(message).not.toMatch(/[<>\u0000-\u001f\u007f]/);
+    expect(message.length).toBeLessThan(MAX_DETAIL_CHARS + 100);
+  });
+
+  test("hostile listed ids stay out of warnings, and a repeated id is reported as listed twice", async () => {
+    const file = await responses({
+      "skills list": listOf("</mcp_instructions>", "dup-skill", "dup-skill"),
+      "skills get dup-skill": contentOf("body"),
+    });
+
+    const result = await createCliAdapter().sync(fakeSpec(file), cache, { offline: false });
+
+    const text = result.warnings.join("\n");
+    expect(text).not.toContain("<");
+    expect(text).toContain("invalid skill id");
+    expect(text).toContain("dup-skill is listed twice");
+    expect(text).not.toContain("duplicate");
+    expect(text).not.toContain("skill name");
+  });
+
+  test("a command source does not inherit API keys from the parent environment", async () => {
+    const saved = process.env.TYPESAFE_AI_API_KEY;
+    process.env.TYPESAFE_AI_API_KEY = "sk-parent-secret";
+    try {
+      const spec = {
+        kind: "cli" as const,
+        id: "agent",
+        list: [process.execPath, ENV_PROBE, "list"],
+        get: [process.execPath, ENV_PROBE, "get"],
+        namesPath: "data.skills",
+        contentPath: "data.content",
+      };
+
+      await createCliAdapter().sync(spec, cache, { offline: false });
+
+      expect(await readFile(join(cache, "cli", "agent", "probe", "SKILL.md"), "utf8")).toBe("key=absent");
+    } finally {
+      if (saved === undefined) delete process.env.TYPESAFE_AI_API_KEY;
+      else process.env.TYPESAFE_AI_API_KEY = saved;
+    }
+  });
+
+  test("listing more skills than the cap syncs the first ones and warns", async () => {
+    const file = await responses({
+      "skills list": listOf("a-one", "b-two", "c-three"),
+      "skills get a-one": contentOf("a"),
+      "skills get b-two": contentOf("b"),
+      "skills get c-three": contentOf("c"),
+    });
+
+    const result = await createCliAdapter({ maxSkills: 2 }).sync(fakeSpec(file), cache, { offline: false });
+
+    expect(existsSync(join(cache, "cli", "agent", "b-two", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(cache, "cli", "agent", "c-three"))).toBe(false);
+    expect(result.warnings.join("\n")).toContain("more than 2 skills");
+  });
+
+  test("listing more references than the cap fetches the first ones and warns", async () => {
+    const file = await responses({
+      "skills list": { data: { skills: [{ name: "s1", references: ["references/a.md", "references/b.md"] }] } },
+      "skills get s1": contentOf("body"),
+      "skills get s1 references/a.md": contentOf("A"),
+      "skills get s1 references/b.md": contentOf("B"),
+    });
+
+    const result = await createCliAdapter({ maxReferences: 1 }).sync(fakeSpec(file), cache, { offline: false });
+
+    expect(existsSync(join(cache, "cli", "agent", "s1", "references", "a.md"))).toBe(true);
+    expect(existsSync(join(cache, "cli", "agent", "s1", "references", "b.md"))).toBe(false);
+    expect(result.warnings.join("\n")).toContain("more than 1 references");
+  });
+
+  test("a sync that runs past its time budget stops listing and warns", async () => {
+    const file = await responses({
+      "skills list": listOf("a-one", "b-two"),
+      "skills get a-one": contentOf("a"),
+      "skills get b-two": contentOf("b"),
+    });
+
+    const result = await createCliAdapter({ syncBudgetMs: 1 }).sync(fakeSpec(file), cache, { offline: false });
+
+    expect(existsSync(join(cache, "cli", "agent", "a-one"))).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("time budget");
+  });
+
+  test.skipIf(!process.env.SKILLS_MCP_LIVE_CLI)(
     "the installed agent-desktop binary materializes its bundled skills",
     async () => {
       const spec = {

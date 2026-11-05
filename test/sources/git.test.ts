@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gitEnv, runGit } from "../../src/sources/git";
 import { SourceError } from "../../src/sources/shared";
-import { makeTempDir } from "./helpers";
+import { git, makeTempDir } from "./helpers";
 
 describe("gitEnv", () => {
   test("disables credential prompts and drops repository variables inherited from a git hook", () => {
@@ -47,5 +47,15 @@ describe("runGit", () => {
     expect(err).toBeInstanceOf(SourceError);
     expect((err as Error).message).toContain("git rev-parse");
     expect((err as Error).message).toContain("fatal");
+  });
+
+  test("git's stderr is sanitized before it reaches the error", async () => {
+    await git(["init", "-q"], dir);
+
+    const err = await runGit(["cat-file", "-p", "<b>nope</b>"], { cwd: dir }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SourceError);
+    expect((err as Error).message).toContain("nope");
+    expect((err as Error).message).not.toContain("<b>");
   });
 });

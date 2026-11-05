@@ -1,6 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { sanitizeInline } from "../text";
 import type { MaterializedSource, SourceAdapter, SourceSpec } from "../types";
 import { SourceError } from "./shared";
 
@@ -18,10 +19,10 @@ export const localAdapter: SourceAdapter<LocalSourceSpec> = {
     try {
       real = await realpath(expandHome(spec.path));
     } catch {
-      throw new SourceError(`local source ${spec.id}: ${spec.path} does not exist`);
+      throw new SourceError(`local source ${sanitizeInline(spec.id)}: ${sanitizeInline(spec.path)} does not exist`);
     }
     if (!(await stat(real)).isDirectory()) {
-      throw new SourceError(`local source ${spec.id}: ${spec.path} is not a directory`);
+      throw new SourceError(`local source ${sanitizeInline(spec.id)}: ${sanitizeInline(spec.path)} is not a directory`);
     }
     return { sourceId: spec.id, roots: [real], revision: null, warnings: [] };
   },

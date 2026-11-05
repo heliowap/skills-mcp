@@ -3,10 +3,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConfigError } from "../../src/config";
+import { createGithubAdapter } from "../../src/sources/github";
 import { SourceError } from "../../src/sources/shared";
 import { addSource, defaultAdapters, listSources, removeSource, syncSources } from "../../src/sources/registry";
 import type { SourceSpec } from "../../src/types";
-import { AGENT_DESKTOP_RESPONSES, FAKE_CLI, makeTempDir } from "./helpers";
+import { AGENT_DESKTOP_RESPONSES, FAKE_CLI, makeRemote, makeTempDir } from "./helpers";
 
 let root: string;
 let configFile: string;
@@ -177,5 +178,35 @@ describe("source registry: sync", () => {
 
     expect(offline[0]!.ok).toBe(true);
     if (offline[0]!.ok) expect(offline[0]!.result.roots).toHaveLength(1);
+  });
+
+  test("a source whose online sync fails falls back to its cached copy, with a warning", async () => {
+    const remoteRoot = join(root, "remote-host");
+    const remote = await makeRemote(remoteRoot, "acme", "skills");
+    await remote.push({ "skills/alpha/SKILL.md": "alpha" }, "first");
+    await addSource({ kind: "github", id: "acme", repo: "acme/skills" });
+    const adapters = { ...defaultAdapters, github: createGithubAdapter({ baseUrl: remote.baseUrl }) };
+    const first = await syncSources({ adapters });
+    expect(first[0]!.ok).toBe(true);
+
+    await rm(join(remoteRoot, "remotes"), { recursive: true, force: true });
+    const second = await syncSources({ adapters });
+
+    const outcome = second[0]!;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result.roots).toHaveLength(1);
+      expect(existsSync(join(outcome.result.roots[0]!, "alpha", "SKILL.md"))).toBe(true);
+      expect(outcome.result.warnings.some((w) => w.includes("cached copy"))).toBe(true);
+    }
+  });
+
+  test("a failing source with nothing cached is reported as failed", async () => {
+    await addSource({ kind: "github", id: "acme", repo: "acme/skills" });
+    const adapters = { ...defaultAdapters, github: createGithubAdapter({ baseUrl: "file:///nonexistent-remote-root" }) };
+
+    const outcomes = await syncSources({ adapters });
+
+    expect(outcomes[0]!.ok).toBe(false);
   });
 });

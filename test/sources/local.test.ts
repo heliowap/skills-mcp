@@ -66,6 +66,17 @@ describe("local adapter", () => {
   });
 });
 
+describe("local adapter messages", () => {
+  test("a missing path is quoted without markup", async () => {
+    const err = await localAdapter
+      .sync({ kind: "local", id: "gone", path: join(root, "<i>absent</i>") }, root, { offline: false })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SourceError);
+    expect((err as Error).message).not.toContain("<i>");
+  });
+});
+
 describe("expandHome", () => {
   test("a leading ~/ expands to the home directory and other paths are unchanged", () => {
     expect(expandHome("~/.agents/skills")).toBe(join(homedir(), ".agents", "skills"));

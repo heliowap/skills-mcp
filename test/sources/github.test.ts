@@ -42,6 +42,10 @@ describe("parseGithubRepo", () => {
   ])("rejects %j", (input) => {
     expect(() => parseGithubRepo(input)).toThrow(SourceError);
   });
+
+  test("the rejection quotes the input without markup", () => {
+    expect(() => parseGithubRepo("a/<b>x</b>/c")).toThrow(/invalid GitHub repository "a\/x\/c"/);
+  });
 });
 
 describe("github adapter against a bare repository standing in for GitHub", () => {

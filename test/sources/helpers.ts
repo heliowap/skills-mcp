@@ -7,6 +7,10 @@ import { pathToFileURL } from "node:url";
 export const FAKE_CLI = join(import.meta.dir, "..", "fixtures", "sources", "cli", "fake-skills-cli.ts");
 /** Responses captured from the real `agent-desktop skills` output (trimmed to one skill). */
 export const AGENT_DESKTOP_RESPONSES = join(import.meta.dir, "..", "fixtures", "sources", "cli", "responses.json");
+/** Command that reports whether an API key reached it (see fixtures/sources/cli). */
+export const ENV_PROBE = join(import.meta.dir, "..", "fixtures", "sources", "cli", "env-probe.ts");
+/** Command that writes noisy stderr and fails. */
+export const NOISY_FAILURE = join(import.meta.dir, "..", "fixtures", "sources", "cli", "noisy-failure.ts");
 
 export async function makeTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "skills-mcp-sources-"));

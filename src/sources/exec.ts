@@ -1,4 +1,5 @@
 import type { Subprocess } from "bun";
+import { messageOf, sanitizeInline } from "../text";
 import { SourceError } from "./shared";
 
 export interface RunOptions {
@@ -18,18 +19,31 @@ export interface RunResult {
 }
 
 /** Stderr kept for error messages; anything beyond is drained and discarded. */
-const STDERR_KEEP_BYTES = 64 * 1024;
+export const STDERR_KEEP_BYTES = 64 * 1024;
+
+/** Variables a command source may see. Everything else stays in the parent, API keys included. */
+export const COMMAND_ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "SHELL"] as const;
+
+/** The allowlisted subset of an environment, for a command source. */
+export function commandEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of COMMAND_ENV_ALLOWLIST) {
+    const value = base[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
 
 /**
  * Runs a program from an argv array. No shell is involved, so arguments are passed literally.
  * Resolves with the exit code for any program that ran to completion (a non-zero exit is not
  * an error here). Rejects with SourceError when the program cannot start, exceeds the timeout,
- * is aborted, or writes more stdout than allowed.
+ * is aborted, or writes more stdout than allowed. Stderr is returned raw; callers sanitize it.
  */
 export async function runArgv(argv: readonly string[], opts: RunOptions): Promise<RunResult> {
   const [program] = argv;
   if (program === undefined) throw new SourceError("cannot run an empty command");
-  const label = argv.slice(0, 2).join(" ");
+  const label = sanitizeInline(argv.slice(0, 2).join(" "));
   if (opts.signal?.aborted) throw new SourceError(`aborted before starting: ${label}`);
 
   const controller = new AbortController();
@@ -59,7 +73,7 @@ export async function runArgv(argv: readonly string[], opts: RunOptions): Promis
     });
   } catch (err) {
     cleanup();
-    throw new SourceError(`cannot start ${program}: ${(err as Error).message}`);
+    throw new SourceError(`cannot start ${sanitizeInline(program)}: ${sanitizeInline(messageOf(err))}`);
   }
 
   try {

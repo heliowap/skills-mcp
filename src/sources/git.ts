@@ -1,11 +1,11 @@
 import { runArgv } from "./exec";
-import { SourceError } from "./shared";
+import { SourceError, sanitizeDetail } from "./shared";
 
 /** Default limit for one git command (clone and fetch of a sparse, blobless repository). */
 export const GIT_TIMEOUT_MS = 120_000;
 
 /** Git's own output for these commands is small; anything larger is a fault. */
-const GIT_STDOUT_LIMIT = 1024 * 1024;
+export const GIT_STDOUT_LIMIT = 1024 * 1024;
 
 export interface GitOptions {
   cwd?: string;
@@ -30,7 +30,7 @@ export function gitEnv(base: NodeJS.ProcessEnv = process.env): Record<string, st
 
 /**
  * Runs `git <args>` and resolves with trimmed stdout. Rejects with a SourceError that carries
- * git's stderr when git exits non-zero.
+ * git's sanitized stderr when git exits non-zero.
  */
 export async function runGit(args: readonly string[], opts: GitOptions = {}): Promise<string> {
   const result = await runArgv(["git", ...args], {
@@ -41,7 +41,9 @@ export async function runGit(args: readonly string[], opts: GitOptions = {}): Pr
     maxStdoutBytes: GIT_STDOUT_LIMIT,
   });
   if (result.exitCode !== 0) {
-    throw new SourceError(`git ${args[0]} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+    throw new SourceError(
+      `git ${sanitizeDetail(String(args[0]))} failed (exit ${result.exitCode}): ${sanitizeDetail(result.stderr.trim())}`,
+    );
   }
   return result.stdout.trim();
 }
