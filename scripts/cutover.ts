@@ -1,4 +1,4 @@
-// Reversible OpenCode cutover, run from the repo root: `bun run migrate plan|apply|revert|verify` (docs/cutover.md).
+// Reversible OpenCode cutover, run from the repo root: `bun run cutover plan|apply|revert|verify` (docs/cutover.md).
 // plan prints the diff apply would make and writes nothing. apply backs up the config and makes the edits,
 // editing the text in place so comments and layout survive. revert restores the newest backup byte for byte.
 // verify reads OpenCode's state and checks it; it never writes.
@@ -741,7 +741,7 @@ async function verify(dir: string, bin: string, env: Env, io: Io, settleMs: numb
   return report.failures === 0 ? 0 : 1;
 }
 
-const USAGE = `usage: migrate <plan|apply|revert|verify> [--config <file>] [--repo <dir>] [--dir <dir>] [--opencode <bin>]
+const USAGE = `usage: cutover <plan|apply|revert|verify> [--config <file>] [--repo <dir>] [--dir <dir>] [--opencode <bin>]
   plan     print the diff apply would make; writes nothing
   apply    back up the config and make the edits
   revert   restore the newest backup, byte for byte
@@ -794,7 +794,7 @@ export async function main(
         );
     }
   } catch (error) {
-    io.err(`migrate ${command}: ${messageOf(error)}\n`);
+    io.err(`cutover ${command}: ${messageOf(error)}\n`);
     return 1;
   }
 }

@@ -2,7 +2,7 @@ import { copyFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { parseJsonc } from "../../scripts/opencode-migrate";
+import { parseJsonc } from "../../scripts/cutover";
 
 /** Checkout root used in place of the real one; the editor only writes the path into the config. */
 export const REPO = "/Users/example/skills_MCP";
@@ -15,7 +15,7 @@ export const FAKE_OPENCODE = join(import.meta.dir, "..", "fixtures", "opencode",
 
 /** A scratch directory holding a copy of the fixture as opencode.jsonc. */
 export async function scratchConfig(): Promise<{ dir: string; config: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "skills-mcp-migrate-"));
+  const dir = await mkdtemp(join(tmpdir(), "skills-mcp-cutover-"));
   const config = join(dir, "opencode.jsonc");
   await copyFile(FIXTURE, config);
   return { dir, config };

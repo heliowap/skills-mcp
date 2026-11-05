@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigEditError, parseJsonc, planConfig } from "../../scripts/opencode-migrate";
+import { ConfigEditError, parseJsonc, planConfig } from "../../scripts/cutover";
 import { FIXTURE, REPO, configOf } from "./helpers";
 
 const PLUGIN = join(REPO, "opencode-plugin", "skills-cutover");

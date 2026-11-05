@@ -1,12 +1,12 @@
 # OpenCode cutover
 
-The cutover switches the user's OpenCode V2 from its native skill list and CLI-backed MCP servers to the skills server. It is reversible: `bun run migrate revert` restores the global config byte for byte. Terms follow [GLOSSARY.md](../GLOSSARY.md); the work plan is in [plan.md](plan.md) (P8).
+The cutover switches the user's OpenCode V2 from its native skill list and CLI-backed MCP servers to the skills server. It is reversible: `bun run cutover revert` restores the global config byte for byte. Terms follow [GLOSSARY.md](../GLOSSARY.md); the work plan is in [plan.md](plan.md) (P8).
 
 **Status:** built and tested. **Not applied.** The global config (`~/.config/opencode/opencode.jsonc`) has not been changed. `apply` needs the user's approval.
 
 ## What apply changes
 
-`bun run migrate apply` makes these edits to `~/.config/opencode/opencode.jsonc`. Comments, trailing commas and every other line stay as they are. The result differs from the input only on the paths below; the command checks this before it writes.
+`bun run cutover apply` makes these edits to `~/.config/opencode/opencode.jsonc`. Comments, trailing commas and every other line stay as they are. The result differs from the input only on the paths below; the command checks this before it writes.
 
 | Path | Change | Why |
 |---|---|---|
@@ -18,7 +18,7 @@ The cutover switches the user's OpenCode V2 from its native skill list and CLI-b
 
 Left alone: `"permission": "allow"`, `mcp.servers.chrome-devtools` (enabled, decision D3), `mcp.servers.playwright` (already disabled), every provider and agent setting.
 
-Against the real file on 2026-11-05 (`sha256 7e7e182b…`, 2,430 lines), `bun run migrate plan` prints a diff of 7 removed and 12 added lines, and exits 0. It writes nothing. The config directory listing and the file checksum were unchanged after the run.
+Against the real file on 2026-11-05 (`sha256 7e7e182b…`, 2,430 lines), `bun run cutover plan` prints a diff of 7 removed and 12 added lines, and exits 0. It writes nothing. The config directory listing and the file checksum were unchanged after the run.
 
 The cutover plugin does two things that config alone cannot:
 
@@ -30,7 +30,7 @@ The cutover plugin does two things that config alone cannot:
 Run after apply, once OpenCode has reloaded its config:
 
 ```sh
-bun run migrate verify
+bun run cutover verify
 ```
 
 It reads `opencode api get "/api/skill?location[directory]=<dir>"` and `opencode mcp list` (read-only) and expects:
@@ -55,7 +55,7 @@ ok   mcp vercel: disabled (want absent or disabled)
 ## Revert
 
 ```sh
-bun run migrate revert
+bun run cutover revert
 ```
 
 Restores the newest `opencode.jsonc.bak-<timestamp>-before-skills-mcp` and compares the result with the backup byte for byte; it prints `byte-identical` on success. Before it overwrites the config, it keeps the replaced bytes in `opencode.jsonc.bak-<timestamp>-before-revert`, so a revert never loses edits made after apply.
@@ -64,11 +64,11 @@ Each apply writes its own backup and never overwrites one. The backup path is pr
 
 ## Runbook
 
-1. `bun run migrate plan`. Read the diff.
+1. `bun run cutover plan`. Read the diff.
 2. Ask the user to approve. Do not run `apply` without approval.
-3. `bun run migrate apply`. Note the backup path.
-4. Wait for OpenCode to reload, then `bun run migrate verify`.
-5. To undo: `bun run migrate revert`, then `bun run migrate verify` should fail, and the native list is back.
+3. `bun run cutover apply`. Note the backup path.
+4. Wait for OpenCode to reload, then `bun run cutover verify`.
+5. To undo: `bun run cutover revert`, then `bun run cutover verify` should fail, and the native list is back.
 
 Options for every command: `--config <file>` (or `SKILLS_MCP_OPENCODE_CONFIG`), `--repo <dir>` (or `SKILLS_MCP_REPO`), and for verify `--dir <dir>` and `--opencode <bin>`.
 
@@ -84,7 +84,7 @@ Settled from OpenCode's `dev` branch (`anomalyco/opencode`, read 2026-11-05) and
   - Order: the supervisor builds `[...pre, ...configured packages, ...post]` (`core/src/plugin/supervisor.ts`, lines 94-98). `post` holds `ConfigSkillPlugin`, `ConfigCompatibilityPlugin` and the browser builtin (`core/src/plugin/internal.ts`). **So a plain `ctx.skill.transform` set up by a configured plugin runs before the user's skills are registered.** A later `add` replaces the whole skill (`core/src/skill.ts`, `editor.add`), which would also drop an earlier `autoinvoke` change.
   - Fix: the plugin registers its hiding transform again on `plugin.updated`. That event is published at the end of each activation batch (`core/src/plugin.ts`, lines 137-187; in the server event manifest, `schema/src/event-manifest.ts`, `featureDefinitions`). The previous registration is disposed, so one stays live.
   - vercel-plugin's MCP and skill registrations use add-if-absent (`vercel/vercel-plugin` at `3ca3e549`, `hooks/src/opencode-plugin.mts`, lines 338-372), so the cutover's disable of `vercel` runs after it.
-- **U9, comment preservation.** OpenCode's own CLI edits its config with `jsonc-parser` 3.3.1 (`packages/cli/package.json`, `packages/cli/src/config/migrate.ts`). This repo has no `jsonc-parser`, and adding one would change `package.json`. The migrate script therefore has its own position-based editor: it parses with source positions and splices the original text. Tests check that every comment survives in order. The real file's two comments are identical before and after the plan.
+- **U9, comment preservation.** OpenCode's own CLI edits its config with `jsonc-parser` 3.3.1 (`packages/cli/package.json`, `packages/cli/src/config/migrate.ts`). This repo has no `jsonc-parser`, and adding one would change `package.json`. The cutover script therefore has its own position-based editor: it parses with source positions and splices the original text. Tests check that every comment survives in order. The real file's two comments are identical before and after the plan.
 
 ### Isolated runtime check
 
@@ -107,6 +107,6 @@ The findings were run, not only read. An isolated OpenCode server (`opencode ser
 
 ## Files
 
-- `scripts/opencode-migrate.ts`: the editor, the diff, and the four commands.
+- `scripts/cutover.ts`: the editor, the diff, and the four commands.
 - `opencode-plugin/skills-cutover/server.ts`: the plugin.
-- `test/migrate/*.test.ts`, `test/migrate/helpers.ts`: tests. `test/fixtures/opencode/`: a representative config and a stand-in `opencode` binary for verify.
+- `test/cutover/*.test.ts`, `test/cutover/helpers.ts`: tests. `test/fixtures/opencode/`: a representative config and a stand-in `opencode` binary for verify.

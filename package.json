@@ -10,7 +10,7 @@
     "budget": "bun scripts/budget.ts",
     "coverage": "bun scripts/coverage.ts",
     "eval": "bun scripts/eval.ts",
-    "migrate": "bun scripts/opencode-migrate.ts",
+    "cutover": "bun scripts/cutover.ts",
     "verify:all": "bun run typecheck && bun test && bun run budget"
   },
   "dependencies": {

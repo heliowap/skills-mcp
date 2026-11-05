@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { unifiedDiff } from "../../scripts/opencode-migrate";
+import { unifiedDiff } from "../../scripts/cutover";
 
 describe("unifiedDiff", () => {
   test("is empty when the texts are equal", () => {

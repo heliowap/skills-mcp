@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main } from "../../scripts/opencode-migrate";
+import { main } from "../../scripts/cutover";
 import { FAKE_OPENCODE, REPO, captureIo } from "./helpers";
 
 let dir: string;

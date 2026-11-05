@@ -1,6 +1,6 @@
 # Plan: `skills` MCP server
 
-**Done when:** `bun run verify:all` (typecheck + all tests + budget) exits 0 at HEAD; the server's fixed OpenCode cost is ≤ ~300 tokens (`bun run budget`, confirmed live after cutover); all 175 OpenCode-registered skills resolve through `find`/`load` (`bun run coverage` → `missing: 0`); OpenCode's native advertised list is empty (or only the 2 builtins, per D1); the 4 CLI-backed MCP servers are off; `bun run migrate revert` restores the config byte-for-byte.
+**Done when:** `bun run verify:all` (typecheck + all tests + budget) exits 0 at HEAD; the server's fixed OpenCode cost is ≤ ~300 tokens (`bun run budget`, confirmed live after cutover); all 175 OpenCode-registered skills resolve through `find`/`load` (`bun run coverage` → `missing: 0`); OpenCode's native advertised list is empty (or only the 3 builtins (opencode, report, browser), per D1); the 4 CLI-backed MCP servers are off; `bun run cutover revert` restores the config byte-for-byte.
 **Highest change class:** Sensitive (untrusted content, process spawning, API keys, global OpenCode permissions). **Review fixed point:** the commit created by P0 (folder is not a git repo today).
 
 ## 1. Architecture
@@ -19,8 +19,8 @@ src/
   mcp/              server.ts, tools.ts, skills-ext.ts             (P5)
   index.ts          stdio entry: serveStdio(() => buildServer(app)) (P5)
   cli.ts            admin CLI: sources list|add|sync|remove, find --json (P5)
-scripts/  budget.ts (P5) · coverage.ts (P6) · eval.ts (P7) · opencode-migrate.ts (P8)
-opencode-plugin/  disable-cli-mcps.ts (P8) · suggest.ts (P9, optional)
+scripts/  budget.ts (P5) · coverage.ts (P6) · eval.ts (P7) · cutover.ts (P8)
+opencode-plugin/  skills-cutover/server.ts (P8) · suggest.ts (P9, optional)
 ```
 
 Every source materializes real directories on disk (local = in place; github = sparse clone; cli = `~/.cache/skills-mcp/cli/<source>/<skill>/SKILL.md`), so there is one scan path and one path-containment rule. YAML via `Bun.YAML.parse` (verified present in Bun 1.4.3), so no YAML dependency.
@@ -89,7 +89,7 @@ TDD applies to every Local behavior and Sensitive package; Sensitive packages al
 - **Purpose:** git fixed point, pinned deps, frozen shared types so wave 2 runs in parallel.
 - **Owns:** `.gitignore`, `package.json`, `bun.lock`, `tsconfig.json`, `src/types.ts`, `src/config.ts`, `src/paths.ts`, `test/config/*`.
 - **Class:** Local behavior (config loader TDD). **Depends:** none.
-- **Steps:** `git init`; `bun add ai@7.0.163 @ai-sdk/typesafe-ai@3.0.34 --exact`; dev `typescript`, `@types/bun`; scripts `test`, `typecheck` (`tsc --noEmit`), `start`, `budget`, `coverage`, `eval`, `migrate`, `verify:all`; types exactly as §1; config schema (sources in priority order, `decision.model`, per-model thresholds, `shardSize`, `timeoutMs`; defaults 0.30/0.50/0.30, 120, 3000); load/default/save test using `SKILLS_MCP_CONFIG`/`SKILLS_MCP_CACHE` temp dirs; first commit.
+- **Steps:** `git init`; `bun add ai@7.0.163 @ai-sdk/typesafe-ai@3.0.34 --exact`; dev `typescript`, `@types/bun`; scripts `test`, `typecheck` (`tsc --noEmit`), `start`, `budget`, `coverage`, `eval`, `cutover`, `verify:all`; types exactly as §1; config schema (sources in priority order, `decision.model`, per-model thresholds, `shardSize`, `timeoutMs`; defaults 0.30/0.50/0.30, 120, 3000); load/default/save test using `SKILLS_MCP_CONFIG`/`SKILLS_MCP_CACHE` temp dirs; first commit.
 - **Verify:** `bun install --frozen-lockfile && bun run typecheck && bun test test/config && bun -e 'import {experimental_decide} from "ai"; console.log(typeof experimental_decide)' && git log --oneline | wc -l` → all exit 0, prints `function`, commit count ≥ 1.
 - **Done:** commit exists; its HEAD is the review fixed point.
 
@@ -151,17 +151,17 @@ TDD applies to every Local behavior and Sensitive package; Sensitive packages al
 
 ### P8 — OpenCode cutover (last, reversible)
 - **Purpose:** hide the native skill list, disable the 4 CLI-backed MCP servers, register `skills`.
-- **Owns:** `scripts/opencode-migrate.ts`, `opencode-plugin/disable-cli-mcps.ts`, `test/migrate/*`, `test/fixtures/opencode/*`.
+- **Owns:** `scripts/cutover.ts`, `opencode-plugin/skills-cutover/server.ts`, `test/cutover/*`, `test/fixtures/opencode/*`.
 - **Class:** Sensitive (global config and permissions). **Depends:** P7.
-- **Steps:** settle U4/U5/U6/U9 from V2 docs and source; `migrate plan` (dry run, prints diff); `migrate apply`: back up to `opencode.jsonc.bak-<ts>-before-skills-mcp`, edit with jsonc-parser preserving comments, add `mcp.servers.skills` (`bun <repo>/src/index.ts`), `disabled: true` for `agent-desktop` and `testsprite`, disable `context7` in whichever shape takes precedence, add the `skill` permission deny (D1), register the plugin that disables the plugin-shipped `vercel` MCP via `ctx.mcp.transform`; `migrate revert` restores the newest backup; tests run on a fixture copy of the real file.
-- **Verify:** `bun test test/migrate && bun run migrate plan`; after `apply`: `opencode api get "/api/skill?location[directory]=$PWD"` shows 0 advertised (2 if D1=A), a fresh session lists `tools["skills"]`, and the disabled servers are absent; a `revert` → `cmp` test against the backup exits 0.
+- **Steps:** settle U4/U5/U6/U9 from V2 docs and source; `cutover plan` (dry run, prints diff); `cutover apply`: back up to `opencode.jsonc.bak-<ts>-before-skills-mcp`, edit with jsonc-parser preserving comments, add `mcp.servers.skills` (`bun <repo>/src/index.ts`), `disabled: true` for `agent-desktop` and `testsprite`, disable `context7` in whichever shape takes precedence, add the `skill` permission deny (D1), register the plugin that disables the plugin-shipped `vercel` MCP via `ctx.mcp.transform`; `cutover revert` restores the newest backup; tests run on a fixture copy of the real file.
+- **Verify:** `bun test test/cutover && bun run cutover plan`; after `apply`: `opencode api get "/api/skill?location[directory]=$PWD"` shows 0 advertised (2 if D1=A), a fresh session lists `tools["skills"]`, and the disabled servers are absent; a `revert` → `cmp` test against the backup exits 0.
 - **Done:** live checks pass; backup path reported to the user.
 
 ### P9 (optional) — OpenCode suggestion plugin
 - **Purpose:** one cookbook-style suggestion line per user turn.
 - **Owns:** `opencode-plugin/suggest.ts`, `test/plugin/*`.
 - **Class:** Local behavior. **Depends:** P8.
-- **Steps:** confirm the `context` hook payload (U7); cache per user message so the classifier runs once per turn, not per loop step; run `bun src/cli.ts find --json` with a timeout and inject nothing on error; push "Relevant to the current request: X. Ignore this if it does not fit." (or the "no skill appears relevant" line); register via `bun run migrate apply --plugin opencode-plugin/suggest.ts`.
+- **Steps:** confirm the `context` hook payload (U7); cache per user message so the classifier runs once per turn, not per loop step; run `bun src/cli.ts find --json` with a timeout and inject nothing on error; push "Relevant to the current request: X. Ignore this if it does not fit." (or the "no skill appears relevant" line); register via `bun run cutover apply --plugin opencode-plugin/suggest.ts`.
 - **Verify:** `bun test test/plugin` → exit 0 (fake ctx: one call per message, timeout path, text); a live turn shows the line.
 - **Done:** p95 added latency recorded in `docs/eval.md`.
 

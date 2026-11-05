@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { main } from "../../scripts/opencode-migrate";
+import { main } from "../../scripts/cutover";
 import { FIXTURE, REPO, captureIo, configOf, scratchConfig } from "./helpers";
 
 const STAMP = "2026-11-05T18-30-00-000Z";
