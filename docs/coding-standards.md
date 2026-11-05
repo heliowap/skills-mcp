@@ -18,13 +18,13 @@ Every skill, resource and source is untrusted data.
 - Resolve every path with `realpath` and confirm it stays inside the skill root before reading.
 - Sanitize names and descriptions before they reach any agent-visible text (tool output, server instructions, suggestions): validate the skill id pattern, strip control characters and XML-like tags, enforce length caps.
 - Enforce size limits on files, skills and command output.
-- Agents may add GitHub sources and local sources through tools; command sources come only from the config file or the admin CLI.
+- Trust follows who added a source. Agents may add and remove GitHub sources through tools; local and command sources come only from the config file or the admin CLI, and only those local sources are trusted sources.
 
 ## Processes, network and secrets
 
 - Spawn processes with `Bun.spawn` and an argv array, a timeout and an `AbortSignal`. Shell strings are off limits.
 - Run git with `GIT_TERMINAL_PROMPT=0`.
-- Read API keys from the environment by name at call time. Keep key values out of logs, errors, tool output and test snapshots.
+- Read API keys from the environment by name, never from config files. Keep key values out of logs, errors, tool output and test snapshots.
 - A missing key makes a decision model unavailable, not an error: `find` falls back to the lexical ranker and says so in `ranker` and `reason`.
 - Retry only rate limits and transient overload (429, 502, 503, 504, 529) with bounded backoff; treat 401/403 as unauthorized and stop.
 
