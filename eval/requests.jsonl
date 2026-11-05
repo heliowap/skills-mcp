@@ -1,0 +1,60 @@
+{"id":"c01","kind":"covered","text":"This PDF has a fillable tax form. Fill in the name, address and dependent fields from this JSON file and save a copy.","gold":"pdf"}
+{"id":"c02","kind":"covered","text":"Turn these meeting notes in markdown into a Word document with a table of action items and their owners.","gold":"docx"}
+{"id":"c03","kind":"covered","text":"I need a 10-slide PowerPoint deck for the Q3 roadmap review, built from these bullet points.","gold":"pptx"}
+{"id":"c04","kind":"covered","text":"This CSV export is a mess. Turn it into an Excel workbook with a column of monthly totals.","gold":"xlsx"}
+{"id":"c05","kind":"covered","text":"Add a firewall rule that rate limits POST requests to /api/login to 10 per minute per IP.","gold":"vercel-firewall"}
+{"id":"c06","kind":"covered","text":"Product lookups are slow and return the same answer for ten minutes. Cache them in my Vercel function per region, and let me clear a group of entries when prices change.","gold":"runtime-cache"}
+{"id":"c07","kind":"covered","text":"Order events need to reach both the email sender and the analytics job, and each one should retry on its own. Set that up on Vercel.","gold":"queues"}
+{"id":"c08","kind":"covered","text":"I want a Celery worker running next to my Next.js app on Vercel. How do I declare it and how much memory does it get?","gold":"daemons"}
+{"id":"c09","kind":"covered","text":"New signups go through email verification and then a welcome sequence, and the whole thing has to survive a deploy in the middle. Can you sketch the flow?","gold":"workflow"}
+{"id":"c10","kind":"covered","text":"Each new user should get one nudge email exactly three days after signing up. How do I schedule that per user?","gold":"vercel-schedules"}
+{"id":"c11","kind":"covered","text":"My Next.js API is slow and I can't tell which call is the culprit. Wire up request tracing so I can see the slow spans.","gold":"vercel-tracing"}
+{"id":"c12","kind":"covered","text":"I want a count of completed checkouts per plan showing up in my Vercel dashboards. Instrument the function that handles checkout.","gold":"custom-metrics"}
+{"id":"c13","kind":"covered","text":"After every deploy some pages keep serving old content and the CDN cache hit rate is low. Why, and how do I fix it?","gold":"cdn-caching"}
+{"id":"c14","kind":"covered","text":"Add a streaming chat endpoint with the AI SDK that can call a weather tool and show the answer as it arrives.","gold":"ai-sdk"}
+{"id":"c15","kind":"covered","text":"Our AI costs spiked last week. Cap the spend on the key my app uses through the gateway and show me the usage.","gold":"ai-gateway"}
+{"id":"c16","kind":"covered","text":"Logged-out visitors can open /dashboard right now. Put a Clerk login in front of it.","gold":"auth"}
+{"id":"c17","kind":"covered","text":"Run this Python snippet a user submitted in an isolated microVM with no network access and send back its stdout.","gold":"vercel-sandbox"}
+{"id":"c18","kind":"covered","text":"The full test run takes 40 minutes on my laptop. Could I split it across several cloud machines?","gold":"offload-to-sandbox"}
+{"id":"c19","kind":"covered","text":"My FastAPI API and Vite app live in one repo. How do I deploy both from one Vercel project?","gold":"vercel-services"}
+{"id":"c20","kind":"covered","text":"Checkout is a separate Vercel project from marketing, and both must answer on www.example.com. How do I route the /checkout path to the checkout app?","gold":"microfrontends"}
+{"id":"c21","kind":"covered","text":"Can a Vercel function hold a WebSocket connection open for live updates, and what are the limits?","gold":"vercel-functions"}
+{"id":"c22","kind":"covered","text":"Our pull requests should build on the GitHub Actions runner and then upload the result to Vercel. Write the workflow file.","gold":"deployments-cicd"}
+{"id":"c23","kind":"covered","text":"I bought app.example.org at a registrar. How do I point it at my Vercel app?","gold":"domains"}
+{"id":"c24","kind":"covered","text":"I want subscription billing for my SaaS hosted on Vercel. Should I add a payments add-on from the marketplace, and how?","gold":"marketplace"}
+{"id":"c25","kind":"covered","text":"Our landing page should be usable by AI agents. Grade it and tell me the top problems dragging the grade down.","gold":"is-agentic"}
+{"id":"c26","kind":"covered","text":"I'm adding a 15 percent coupon to the invoice total. Start with a failing check for that case, then write the code that passes it.","gold":"tdd"}
+{"id":"c27","kind":"covered","text":"The nightly import got much heavier on memory after last week's release and I can't see why. Track it down.","gold":"diagnosing-bugs"}
+{"id":"c28","kind":"covered","text":"My agent keeps force-pushing and running hard resets on this repo. Lock those git commands down so it can't run them.","gold":"git-guardrails-claude-code"}
+{"id":"c29","kind":"covered","text":"Our commits keep landing with broken formatting and type errors. I want those checks to run automatically when I commit.","gold":"setup-pre-commit"}
+{"id":"c30","kind":"covered","text":"Record a Playwright script that fills in the signup form, submits it and takes a screenshot of the welcome page.","gold":"playwright-cli"}
+{"id":"c31","kind":"covered","text":"Before I open the PR, check my branch against our repo's written rules and tell me where it breaks them.","gold":"code-review"}
+{"id":"c32","kind":"covered","text":"Half of my tests break every time I rename a private helper. Rework them so they only check what callers can see.","gold":"principle-test-behavior-not-implementation"}
+{"id":"c33","kind":"covered","text":"We call the same thing 'settlement batch' in one file and 'payout run' in another. Pin down one term and write down why we chose it.","gold":"domain-modeling"}
+{"id":"c34","kind":"covered","text":"The agent ignores our commit conventions even though they are written in its instructions file. Rewrite that file so the rules are stated plainly.","gold":"writing-for-agents"}
+{"id":"c35","kind":"covered","text":"Write the PR body for this branch with a summary, the evidence, and the merge danger.","gold":"pr"}
+{"id":"c36","kind":"covered","text":"This Next.js page fetches user, orders and settings one after another, and it's slow. Make the fetches overlap.","gold":"react-best-practices"}
+{"id":"c37","kind":"covered","text":"This blog draft reads like a chatbot wrote it: stacked adjectives, 'delve', and tidy triplets everywhere. Tighten it.","gold":"unslop"}
+{"id":"c38","kind":"covered","text":"Can you check our TLA+ spec of the checkout states and turn its transitions into a diagram?","gold":"statechart"}
+{"id":"c39","kind":"covered","text":"Setting up a new environment means clicking through three dashboards and pasting tokens into CI. Script the walkthrough so I don't miss a step.","gold":"wizard"}
+{"id":"c40","kind":"covered","text":"Let's look back at how this session went: what slowed us down, and what we should do differently next time.","gold":"retro"}
+{"id":"e01","kind":"everyday","text":"What is 18 percent of 2,350 before tax?","gold":null}
+{"id":"e02","kind":"everyday","text":"Draft a short thank-you text for a coworker who covered my shift.","gold":null}
+{"id":"e03","kind":"everyday","text":"Convert 72 degrees Fahrenheit to Celsius.","gold":null}
+{"id":"e04","kind":"everyday","text":"Suggest a three-day itinerary for Lisbon in the spring.","gold":null}
+{"id":"e05","kind":"everyday","text":"What can I cook tonight with eggs, spinach and feta?","gold":null}
+{"id":"e06","kind":"everyday","text":"Help me write a polite email declining a meeting on Friday.","gold":null}
+{"id":"e07","kind":"everyday","text":"Give me a 20-minute bodyweight workout for a beginner.","gold":null}
+{"id":"k01","kind":"conceptual","text":"Explain what a monad is.","gold":null}
+{"id":"k02","kind":"conceptual","text":"What is the difference between a process and a thread?","gold":null}
+{"id":"k03","kind":"conceptual","text":"Why is the sky blue?","gold":null}
+{"id":"k04","kind":"conceptual","text":"What does eventual consistency mean in distributed systems?","gold":null}
+{"id":"k05","kind":"conceptual","text":"Explain how public-key cryptography works at a high level.","gold":null}
+{"id":"k06","kind":"conceptual","text":"What is the difference between TCP and UDP?","gold":null}
+{"id":"n01","kind":"near-miss-tool","text":"Use the Terraform CLI to plan a change that adds an S3 bucket.","gold":null}
+{"id":"n02","kind":"near-miss-tool","text":"Run kubectl to scale my deployment to five replicas.","gold":null}
+{"id":"n03","kind":"near-miss-tool","text":"Use the Stripe CLI to forward webhook events to localhost.","gold":null}
+{"id":"n04","kind":"near-miss-tool","text":"Use ffmpeg to trim the first ten seconds off this MP4.","gold":null}
+{"id":"n05","kind":"near-miss-tool","text":"Use psql to list the ten largest tables in my local Postgres database.","gold":null}
+{"id":"n06","kind":"near-miss-tool","text":"Use the AWS CLI to list my EC2 instances in us-east-1.","gold":null}
+{"id":"n07","kind":"near-miss-tool","text":"Use Docker Compose to start a local Redis container and a Postgres container.","gold":null}

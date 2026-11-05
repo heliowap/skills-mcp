@@ -174,6 +174,6 @@ describe("resolveThresholds", () => {
   });
 
   test("a model with no entries in either table gets the defaults", () => {
-    expect(resolveThresholds("typesafe-ai:jev-1.14.0", {})).toEqual(defaults);
+    expect(resolveThresholds("plain:model", {})).toEqual(defaults);
   });
 });

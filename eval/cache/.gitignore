@@ -1,0 +1,4 @@
+# Cached model answers. They name the user's own skills and cost money to make, so they stay local.
+# Delete this directory to force a fresh run; `bun run eval -- --ranker <model id>` refills it.
+*
+!.gitignore
