@@ -379,3 +379,104 @@ describe("Catalog.read", () => {
     expect(await catalog.read("ghost", "forms.md")).toEqual({ error: "missing" });
   });
 });
+
+describe("buildCatalog: trusted sources", () => {
+  const trusted = { trustedSources: new Set(["mine"]) };
+
+  test("a trusted source includes a top-level symlink to a skill outside its root, rooted at the target", async () => {
+    const outside = await tree({ "real-skill/SKILL.md": skillMd("linked", "Lives outside the root.") });
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "linked", join(outside, "real-skill"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.get("linked")).toMatchObject({
+      id: "linked",
+      sourceId: "mine",
+      root: join(outside, "real-skill"),
+    });
+    expect(catalog.get("keep")).toBeDefined();
+    expect(warnings).toEqual([]);
+  });
+
+  test("the same symlink from an untrusted source is skipped with a warning", async () => {
+    const outside = await tree({ "real-skill/SKILL.md": skillMd("linked", "Lives outside the root.") });
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "linked", join(outside, "real-skill"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])]);
+
+    expect(catalog.get("linked")).toBeUndefined();
+    expect(warned(warnings, "linked", "outside")).toBe(true);
+  });
+
+  test("a trusted source still skips a top-level symlink to a plain file outside its root", async () => {
+    const outside = await tree({ "notes.md": "Not a skill." });
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "notes", join(outside, "notes.md"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.all().map((r) => r.id)).toEqual(["keep"]);
+    expect(warned(warnings, "notes", "outside")).toBe(true);
+  });
+
+  test("a symlink below the top level stays confined to the source root even when trusted", async () => {
+    const outside = await tree({ "real-skill/SKILL.md": skillMd("nested", "Lives outside the root.") });
+    const base = await tree({ "group/keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "group/nested", join(outside, "real-skill"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.get("nested")).toBeUndefined();
+    expect(warned(warnings, "group/nested", "outside")).toBe(true);
+  });
+
+  test("a file link inside a trusted symlinked skill that leaves the skill is rejected and not listed", async () => {
+    const outside = await tree({
+      "real-skill/SKILL.md": skillMd("linked", "Lives outside the root."),
+      "real-skill/guide.md": "Guide.\n",
+      "secret.txt": "top secret",
+    });
+    await link(outside, "real-skill/leak.txt", join(outside, "secret.txt"));
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "linked", join(outside, "real-skill"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(await catalog.read("linked", "guide.md")).toEqual({ text: "Guide.\n" });
+    expect(await catalog.read("linked", "leak.txt")).toEqual({ error: "outside-root" });
+    expect((await catalog.load("linked")).resources).toEqual(["guide.md"]);
+    expect(warned(warnings, "leak.txt", "outside")).toBe(true);
+  });
+
+  test("a dangling symlink and a symlink loop produce warnings, not a failure", async () => {
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "ghost", join(base, "nowhere"));
+    await link(base, "loop-a", join(base, "loop-b"));
+    await link(base, "loop-b", join(base, "loop-a"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.all().map((r) => r.id)).toEqual(["keep"]);
+    expect(warned(warnings, "ghost", "broken")).toBe(true);
+    expect(warned(warnings, "loop-a", "broken")).toBe(true);
+  });
+
+  test("two symlinks to one outside skill yield one skill", async () => {
+    const outside = await tree({ "real-skill/SKILL.md": skillMd("shared", "Lives outside the root.") });
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "first", join(outside, "real-skill"));
+    await link(base, "second", join(outside, "real-skill"));
+    const { catalog } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.all().map((r) => r.id)).toEqual(["first", "keep"]);
+    expect(catalog.get("first")?.root).toBe(join(outside, "real-skill"));
+  });
+
+  test("the file limit applies to a trusted symlinked skill", async () => {
+    const files: Record<string, string> = { "real-skill/SKILL.md": skillMd("big", "Too many files.") };
+    for (let i = 0; i < 512; i++) files[`real-skill/f${i}.txt`] = "x";
+    const outside = await tree(files);
+    const base = await tree({ "keep/SKILL.md": skillMd("keep", "Inside the root.") });
+    await link(base, "big", join(outside, "real-skill"));
+    const { catalog, warnings } = await buildCatalog([source("mine", [base])], trusted);
+
+    expect(catalog.get("big")).toBeUndefined();
+    expect(warned(warnings, "big", "512")).toBe(true);
+  });
+});

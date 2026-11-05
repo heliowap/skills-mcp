@@ -56,8 +56,16 @@ export async function resolveInside(base: string, relPath: string): Promise<Cont
   return isInside(real, base) ? { ok: true, real } : { ok: false, error: "outside-root" };
 }
 
+export interface ScanOptions {
+  /**
+   * Lets a top-level symlink in the root point at a directory outside it. Its target then
+   * becomes the containment boundary for that skill's files. Only for sources the user trusts.
+   */
+  followOutsideLinks?: boolean;
+}
+
 /** Walks one source root (up to MAX_SCAN_DEPTH) and returns every directory that holds a SKILL.md. */
-export async function scanRoot(root: string): Promise<ScanResult> {
+export async function scanRoot(root: string, options: ScanOptions = {}): Promise<ScanResult> {
   const warnings: string[] = [];
   let rootReal: string;
   try {
@@ -66,8 +74,15 @@ export async function scanRoot(root: string): Promise<ScanResult> {
     return { directories: [], warnings: [`${root}: source root not found`] };
   }
 
-  const entries: Entry[] = [];
-  await walk(rootReal, rootReal, "", 0, entries, warnings, new Set([rootReal]));
+  const state: WalkState = {
+    rootReal,
+    followOutside: options.followOutsideLinks ?? false,
+    entries: [],
+    warnings,
+    visited: new Set([rootReal]),
+  };
+  await walk(state, rootReal, rootReal, "", 0);
+  const entries = state.entries;
 
   const files = new Map(entries.filter((e) => !e.isDir).map((e) => [e.rel, e]));
   const dirs = [{ rel: "", real: rootReal }, ...entries.filter((e) => e.isDir)];
@@ -98,20 +113,25 @@ export async function scanRoot(root: string): Promise<ScanResult> {
   return { directories, warnings };
 }
 
-async function walk(
-  rootReal: string,
-  dirReal: string,
-  dirRel: string,
-  depth: number,
-  entries: Entry[],
-  warnings: string[],
-  visited: Set<string>,
-): Promise<void> {
+interface WalkState {
+  rootReal: string;
+  followOutside: boolean;
+  entries: Entry[];
+  warnings: string[];
+  /** Realpaths of directories already walked, so a target reached twice is scanned once. */
+  visited: Set<string>;
+}
+
+/**
+ * Walks `dirReal`, whose entries must stay inside `scope`: the source root, or the target of a
+ * followed top-level link. Entries that leave `scope` are skipped with a warning.
+ */
+async function walk(state: WalkState, scope: string, dirReal: string, dirRel: string, depth: number): Promise<void> {
   let children: Dirent<string>[];
   try {
     children = await readdir(dirReal, { withFileTypes: true, encoding: "utf8" });
   } catch {
-    warnings.push(`${dirRel || "."}: directory unreadable; skipped`);
+    state.warnings.push(`${dirRel || "."}: directory unreadable; skipped`);
     return;
   }
   children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -126,23 +146,30 @@ async function walk(
       real = await realpath(join(dirReal, child.name));
       info = await stat(real);
     } catch {
-      warnings.push(`${rel}: broken or unreadable link; skipped`);
-      continue;
-    }
-    if (!isInside(real, rootReal)) {
-      warnings.push(`${rel}: resolves outside the source root; skipped`);
+      state.warnings.push(`${rel}: broken or unreadable link; skipped`);
       continue;
     }
 
+    let childScope = scope;
+    if (!isInside(real, scope)) {
+      // Only a directory linked from the top of a trusted source may leave the root.
+      if (!state.followOutside || dirRel !== "" || !info.isDirectory()) {
+        const where = scope === state.rootReal ? "the source root" : "its skill directory";
+        state.warnings.push(`${rel}: resolves outside ${where}; skipped`);
+        continue;
+      }
+      childScope = real;
+    }
+
     if (info.isDirectory()) {
-      if (visited.has(real)) continue;
-      visited.add(real);
-      entries.push({ rel, real, size: 0, isDir: true });
+      if (state.visited.has(real)) continue;
+      state.visited.add(real);
+      state.entries.push({ rel, real, size: 0, isDir: true });
       if (depth + 1 <= MAX_SCAN_DEPTH) {
-        await walk(rootReal, real, rel, depth + 1, entries, warnings, visited);
+        await walk(state, childScope, real, rel, depth + 1);
       }
     } else if (info.isFile()) {
-      entries.push({ rel, real, size: info.size, isDir: false });
+      state.entries.push({ rel, real, size: info.size, isDir: false });
     }
   }
 }

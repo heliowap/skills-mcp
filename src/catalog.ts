@@ -42,13 +42,22 @@ export class CatalogError extends Error {
   }
 }
 
+export interface BuildOptions {
+  /**
+   * Source ids whose top-level symlinks may point at skills outside the source root (local
+   * sources the user configured). A skill reached that way is rooted at its target's realpath.
+   * Every other source keeps the strict containment rule.
+   */
+  trustedSources?: ReadonlySet<string>;
+}
+
 /**
  * Builds the catalog. Sources are taken in the given order: an earlier source keeps a
  * skill id and later ones are reported as shadowed. Within a source, copies of one skill
  * are collapsed silently: a copy under `upstream/` or `plugins/` loses, then the shallowest
  * wins, then the lexicographically smallest path.
  */
-export async function buildCatalog(sources: MaterializedSource[]): Promise<BuiltCatalog> {
+export async function buildCatalog(sources: MaterializedSource[], options: BuildOptions = {}): Promise<BuiltCatalog> {
   const warnings: string[] = [];
   const shadowed: { id: SkillId; sourceId: string; by: string }[] = [];
   const winners = new Map<SkillId, Accepted>();
@@ -56,10 +65,11 @@ export async function buildCatalog(sources: MaterializedSource[]): Promise<Built
   for (const source of sources) {
     const tag = `[${source.sourceId}]`;
     warnings.push(...source.warnings.map((w) => `${tag} ${w}`));
+    const followOutsideLinks = options.trustedSources?.has(source.sourceId) ?? false;
 
     const found: Accepted[] = [];
     for (const [rootIndex, root] of source.roots.entries()) {
-      const scan = await scanRoot(root);
+      const scan = await scanRoot(root, { followOutsideLinks });
       warnings.push(...scan.warnings.map((w) => `${tag} ${w}`));
       for (const directory of scan.directories) {
         const result = await accept(source, directory, rootIndex);
