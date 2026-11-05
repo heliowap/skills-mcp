@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createDecisionModel } from "../../src/decision/ai-sdk";
 import { DecisionAuthError } from "../../src/decision/errors";
+import { type ProviderEntry, resolveThresholds } from "../../src/decision/providers";
 import type { DecisionModel, Question } from "../../src/types";
 
 const formatQuestion: Question = {
@@ -11,6 +12,8 @@ const formatQuestion: Question = {
 };
 const state = { request: "Turn this markdown report into a Word document" };
 const fast = { baseDelayMs: 1 };
+/** Stands in for the config's timeoutMs; the adapter has no default of its own. */
+const budget = { timeoutMs: 5000 };
 
 type Reply = { status: number; body: unknown };
 
@@ -49,20 +52,20 @@ function requireModel(result: DecisionModel | { unavailable: string }): Decision
 
 describe("createDecisionModel: keys", () => {
   test("no key yields an unavailable reason that names the variables, without throwing", () => {
-    const result = createDecisionModel("typesafe-ai:jev-1.14.0", {});
+    const result = createDecisionModel("typesafe-ai:jev-1.14.0", {}, budget);
 
     expect(result).toEqual({ unavailable: expect.stringContaining("TYPESAFE_AI_API_KEY") });
     expect(result).toEqual({ unavailable: expect.stringContaining("TYPESAFE_API_KEY") });
   });
 
   test("an unknown model id is unavailable", () => {
-    expect(createDecisionModel("no-such:model", {})).toEqual({ unavailable: expect.stringContaining("no-such:model") });
+    expect(createDecisionModel("no-such:model", {}, budget)).toEqual({ unavailable: expect.stringContaining("no-such:model") });
   });
 
   test("the first present variable in keyEnv order is used; empty values count as absent", async () => {
     const { fetch, seen } = scriptedFetch([docxAnswer]);
     const model = requireModel(
-      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "", TYPESAFE_API_KEY: "fallback-key" }, { fetch }),
+      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "", TYPESAFE_API_KEY: "fallback-key" }, { ...budget, fetch }),
     );
 
     await model.decide({ state, questions: [formatQuestion] });
@@ -76,7 +79,7 @@ describe("createDecisionModel: keys", () => {
       createDecisionModel(
         "typesafe-ai:jev-1.14.0",
         { TYPESAFE_AI_API_KEY: "primary-key", TYPESAFE_API_KEY: "fallback-key" },
-        { fetch },
+        { ...budget, fetch },
       ),
     );
 
@@ -86,10 +89,10 @@ describe("createDecisionModel: keys", () => {
   });
 
   test("a gateway entry needs AI_GATEWAY_API_KEY and keeps its string id", () => {
-    expect(createDecisionModel("gateway:typesafe-ai/jev", {})).toEqual({
+    expect(createDecisionModel("gateway:typesafe-ai/jev", {}, budget)).toEqual({
       unavailable: expect.stringContaining("AI_GATEWAY_API_KEY"),
     });
-    const model = requireModel(createDecisionModel("gateway:typesafe-ai/jev", { AI_GATEWAY_API_KEY: "gw-key" }));
+    const model = requireModel(createDecisionModel("gateway:typesafe-ai/jev", { AI_GATEWAY_API_KEY: "gw-key" }, budget));
     expect(model.id).toBe("gateway:typesafe-ai/jev");
   });
 });
@@ -97,7 +100,9 @@ describe("createDecisionModel: keys", () => {
 describe("createDecisionModel: transport through the TypeSafe provider", () => {
   test("requests go to the System One path under the default TypeSafe base URL", async () => {
     const { fetch, seen } = scriptedFetch([docxAnswer]);
-    const model = requireModel(createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "k" }, { fetch }));
+    const model = requireModel(
+      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "k" }, { ...budget, fetch }),
+    );
 
     await model.decide({ state, questions: [formatQuestion] });
 
@@ -108,7 +113,7 @@ describe("createDecisionModel: transport through the TypeSafe provider", () => {
     const secret = "***REDACTED***";
     const { fetch, seen } = scriptedFetch([{ status: 403, body: { message: "Forbidden" } }]);
     const model = requireModel(
-      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: secret }, { fetch, retry: fast }),
+      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: secret }, { ...budget, fetch, retry: fast }),
     );
 
     const error = await model.decide({ state, questions: [formatQuestion] }).catch((e: unknown) => e);
@@ -125,11 +130,50 @@ describe("createDecisionModel: transport through the TypeSafe provider", () => {
       { status: 503, body: { message: "unavailable" } },
       docxAnswer,
     ]);
-    const model = requireModel(createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "k" }, { fetch, retry: fast }));
+    const model = requireModel(
+      createDecisionModel("typesafe-ai:jev-1.14.0", { TYPESAFE_AI_API_KEY: "k" }, { ...budget, fetch, retry: fast }),
+    );
 
     const answers = await model.decide({ state, questions: [formatQuestion] });
 
     expect(seen.length).toBe(3);
     expect(answers.get("format")).toMatchObject({ kind: "choice", choice: "docx" });
+  });
+});
+
+describe("resolveThresholds", () => {
+  const table: Record<string, ProviderEntry> = {
+    "tuned:model": {
+      provider: "gateway",
+      modelId: "tuned/model",
+      keyEnv: [],
+      thresholds: { action: 0.4, named: 0.6, fits: 0.2 },
+    },
+    "plain:model": { provider: "gateway", modelId: "plain/model", keyEnv: [] },
+  };
+  const defaults = { action: 0.3, named: 0.5, fits: 0.3 };
+
+  test("a config entry for the model beats its providers.json thresholds", () => {
+    const configured = { action: 0.9, named: 0.8, fits: 0.7 };
+
+    expect(resolveThresholds("tuned:model", { "tuned:model": configured }, table)).toEqual(configured);
+  });
+
+  test("providers.json thresholds apply when the config has no entry for the model", () => {
+    expect(resolveThresholds("tuned:model", {}, table)).toEqual({ action: 0.4, named: 0.6, fits: 0.2 });
+  });
+
+  test("the config schema defaults apply when neither source sets thresholds", () => {
+    expect(resolveThresholds("plain:model", {}, table)).toEqual(defaults);
+  });
+
+  test("a config entry for another model does not apply", () => {
+    const other = { "tuned:model": { action: 0.9, named: 0.8, fits: 0.7 } };
+
+    expect(resolveThresholds("plain:model", other, table)).toEqual(defaults);
+  });
+
+  test("a model with no entries in either table gets the defaults", () => {
+    expect(resolveThresholds("typesafe-ai:jev-1.14.0", {})).toEqual(defaults);
   });
 });

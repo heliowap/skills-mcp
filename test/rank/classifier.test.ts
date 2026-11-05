@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createBm25Ranker } from "../../src/rank/bm25";
 import { createClassifier } from "../../src/rank/classifier";
-import type { Question, SkillRecord, Thresholds } from "../../src/types";
+import type { Answer, DecisionModel, Question, SkillRecord, Thresholds } from "../../src/types";
 import { catalog, failingModel, hangingModel, scriptedModel, skill, type Script } from "./helpers";
 
 const thresholds: Thresholds = { action: 0.3, named: 0.5, fits: 0.3 };
@@ -203,5 +203,46 @@ describe("classifier fallbacks", () => {
     expect(result.suggestion).toBeNull();
     expect(result.candidates[0]?.id).toBe("pptx-author");
     expect(result.candidates[0]?.description).toBe(decks[0]!.description);
+  });
+});
+
+describe("classifier invalid answers", () => {
+  test("an invalid rerank choice falls back, and the reason names the question key but not the task", async () => {
+    const model = scriptedModel({ ...pickPptx, action: actionHigh, winner: "ghost", fits: {} });
+
+    const result = await classifierFor(model).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25-fallback");
+    expect(result.reason).toContain('"rerank"');
+    expect(result.reason).not.toContain(deckRequest);
+  });
+
+  test("a model that returns no shard answer falls back, and the reason names that question", async () => {
+    const silent: DecisionModel = { id: "stub:silent", decide: async () => new Map() };
+
+    const result = await classifierFor(silent).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25-fallback");
+    expect(result.reason).toContain('"shard::0"');
+  });
+
+  test("a shard choice outside the options falls back, and the reason names the question, not the choice", async () => {
+    const offMenu: DecisionModel = {
+      id: "stub:off-menu",
+      decide: async ({ questions }) =>
+        new Map(
+          questions.map((q): [string, Answer] =>
+            q.kind === "choice"
+              ? [q.key, { kind: "choice", key: q.key, choice: "ghost-skill", probabilities: {} }]
+              : [q.key, { kind: "boolean", key: q.key, probability: 0 }],
+          ),
+        ),
+    };
+
+    const result = await classifierFor(offMenu).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25-fallback");
+    expect(result.reason).toContain('"shard::0"');
+    expect(result.reason).not.toContain("ghost-skill");
   });
 });

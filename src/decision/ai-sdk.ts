@@ -7,15 +7,16 @@ import {
   type Experimental_DecisionAnswer,
   type Experimental_DecisionModel,
   type Experimental_DecisionQuestion,
+  InvalidResponseDataError,
 } from "ai";
 import type { Answer, DecisionModel, Question } from "../types";
-import { DecisionRefusedError } from "./errors";
+import { DecisionRefusedError, DecisionResponseError, DecisionUnavailableError } from "./errors";
 import { type Env, type ProviderEntry, providerTable, resolveKey } from "./providers";
 import { type RetryPolicy, runWithRetry } from "./retry";
 
 export interface DecisionModelOptions {
-  /** Budget per decide call, retries included. Defaults to the config default (3000 ms). */
-  timeoutMs?: number;
+  /** Budget per decide call, retries included. The caller passes config.timeoutMs; there is no default here. */
+  timeoutMs: number;
   retry?: Partial<RetryPolicy>;
   /** Transport override, for tests and proxies. */
   fetch?: typeof globalThis.fetch;
@@ -26,7 +27,6 @@ export interface Unavailable {
   unavailable: string;
 }
 
-const DEFAULT_TIMEOUT_MS = 3000;
 const TYPESAFE_BASE_URL = "https://api.typesafe.ai/v1";
 
 type SdkAnswer = Experimental_DecisionAnswer<Experimental_DecisionQuestion>;
@@ -35,12 +35,7 @@ type SdkAnswer = Experimental_DecisionAnswer<Experimental_DecisionQuestion>;
  * Wraps an AI SDK decision model as a DecisionModel. Retries and the timeout
  * are owned here, so the SDK call runs with `maxRetries: 0`.
  */
-export function fromSdkModel(
-  id: string,
-  model: Experimental_DecisionModel,
-  options: DecisionModelOptions = {},
-): DecisionModel {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+export function fromSdkModel(id: string, model: Experimental_DecisionModel, options: DecisionModelOptions): DecisionModel {
   return {
     id,
     decide: ({ state, questions, signal }) =>
@@ -59,11 +54,42 @@ export function fromSdkModel(
             if (Experimental_DecisionRefusalError.isInstance(error)) {
               throw new DecisionRefusedError(error.questionIds);
             }
+            // The SDK's own error carries the raw response and a cause; only the question keys leave this file.
+            if (InvalidResponseDataError.isInstance(error)) {
+              throw new DecisionResponseError(
+                questions.map((question) => question.key),
+                "answers do not match the questions",
+              );
+            }
             throw error;
           }
         },
-        { timeoutMs, signal, policy: options.retry },
+        { timeoutMs: options.timeoutMs, signal, policy: options.retry },
       ),
+  };
+}
+
+/**
+ * The decision model the classifier should use, or undefined when none is
+ * configured. A configured id that cannot be built (unknown, or no key) yields a
+ * model whose `decide` rejects with DecisionUnavailableError, so the classifier
+ * fails open to the lexical ranker and reports the reason.
+ */
+export function resolveDecisionModel(
+  modelId: string | undefined,
+  env: Env,
+  options: DecisionModelOptions,
+): DecisionModel | undefined {
+  if (modelId === undefined) return undefined;
+  const built = createDecisionModel(modelId, env, options);
+  if ("unavailable" in built) return unavailableModel(modelId, built.unavailable);
+  return built;
+}
+
+function unavailableModel(id: string, reason: string): DecisionModel {
+  return {
+    id,
+    decide: () => Promise.reject(new DecisionUnavailableError(reason)),
   };
 }
 
@@ -74,7 +100,7 @@ export function fromSdkModel(
 export function createDecisionModel(
   modelId: string,
   env: Env = process.env,
-  options: DecisionModelOptions = {},
+  options: DecisionModelOptions,
 ): DecisionModel | Unavailable {
   const entry = providerTable[modelId];
   if (!entry) return { unavailable: `unknown decision model "${modelId}"; add it to providers.json` };
@@ -117,7 +143,7 @@ function fromSdkAnswers(questions: readonly Question[], answers: Record<string, 
   for (const question of questions) {
     const answer = answers[question.key];
     if (question.kind === "choice") {
-      if (answer?.type !== "choice") throw new Error(`decision model returned no choice for "${question.key}"`);
+      if (answer?.type !== "choice") throw new DecisionResponseError([question.key], "expected a choice answer");
       out.set(question.key, {
         kind: "choice",
         key: question.key,
@@ -125,7 +151,7 @@ function fromSdkAnswers(questions: readonly Question[], answers: Record<string, 
         probabilities: answer.probabilities ?? { [answer.choice]: 1 },
       });
     } else {
-      if (answer?.type !== "boolean") throw new Error(`decision model returned no boolean for "${question.key}"`);
+      if (answer?.type !== "boolean") throw new DecisionResponseError([question.key], "expected a boolean answer");
       out.set(question.key, { kind: "boolean", key: question.key, probability: answer.probability });
     }
   }

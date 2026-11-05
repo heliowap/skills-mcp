@@ -8,6 +8,8 @@ import type {
   SkillRecord,
   Thresholds,
 } from "../types";
+import { messageOf } from "../text";
+import { ClassifierError } from "./errors";
 import { shardOf } from "./shard";
 
 /** Candidates returned when `find` is called without a limit. */
@@ -58,10 +60,13 @@ export interface ClassifierOptions {
   descriptionBudgetChars?: number;
 }
 
+/** One option with its probability. It carries the skill record, so no later step looks skills up by id. */
 interface Ranked {
-  id: string;
+  skill: SkillRecord;
   probability: number;
 }
+
+type ChoiceAnswer = Extract<Answer, { kind: "choice" }>;
 
 /**
  * The TypeSafe cookbook's two-call flow. Call 1 ranks every shard in parallel, and only shard 0
@@ -121,34 +126,34 @@ async function runModelFlow(
     ),
   );
 
-  const perShard = shards.map((shard, i) =>
-    rankByProbability(shardProbabilities(answerOf(firstRound[i]!, `shard::${i}`), shard)),
-  );
+  const perShard = shards.map((shard, i) => {
+    const key = shardKey(i);
+    return rankShard(key, choiceIn(roundAt(firstRound, i), key), shard);
+  });
   const merged = perShard.flatMap((ranked) => ranked.slice(0, SHORTLIST_PER_SHARD)).sort(byProbability);
-  const byId = new Map(skills.map((s) => [s.id, s]));
-  const candidates = merged.slice(0, limit).map(({ id, probability }) => ({
-    id,
-    description: byId.get(id)!.description,
+  const candidates = merged.slice(0, limit).map(({ skill, probability }) => ({
+    id: skill.id,
+    description: skill.description,
     score: probability,
   }));
 
   // Gate: continue only if the action mean or the named score reaches its threshold.
-  const { action, named } = gateScores(firstRound[0]!);
+  const { action, named } = gateScores(roundAt(firstRound, 0));
   const { thresholds } = opts;
   if (!(action >= thresholds.action || named >= thresholds.named)) {
     return { needsSkill: false, suggestion: null, candidates, ranker: "model", model: model.id };
   }
 
-  // Call 2: rerank the overall top three in full, with one fits question each.
-  const finalists = merged.slice(0, SHORTLIST).map((r) => byId.get(r.id)!);
+  // Call 2: rerank the shortlist in full, with one fits question each.
+  const shortlist = merged.slice(0, SHORTLIST).map((r) => r.skill);
   const second = await withDeadline(parentSignal, opts.timeoutMs, (signal) =>
-    model.decide({ state: { request: task }, questions: rerankQuestions(finalists), signal }),
+    model.decide({ state: { request: task }, questions: rerankQuestions(shortlist), signal }),
   );
-  const winner = answerOf(second, "rerank");
-  if (winner.kind !== "choice" || !finalists.some((s) => s.id === winner.choice)) {
-    throw new Error("decision model returned an invalid rerank choice");
+  const winner = choiceIn(second, "rerank");
+  if (!shortlist.some((s) => s.id === winner.choice)) {
+    throw new ClassifierError('decision model returned an invalid choice for "rerank"');
   }
-  const bestFit = Math.max(...finalists.map((s) => probabilityOf(second, `fits::${s.id}`)));
+  const bestFit = Math.max(...shortlist.map((s) => probabilityIn(second, `fits::${s.id}`)));
 
   return {
     needsSkill: true,
@@ -167,7 +172,7 @@ function firstRoundQuestions(
   const questions: Question[] = [
     {
       kind: "choice",
-      key: `shard::${shardIndex}`,
+      key: shardKey(shardIndex),
       instructions: CHOICE_INSTRUCTIONS,
       options: optionsWithinBudget(shard, CHOICE_INSTRUCTIONS, descriptionBudgetChars),
     },
@@ -189,15 +194,15 @@ function optionsWithinBudget(shard: SkillRecord[], instructions: string, cap: nu
   return Object.fromEntries(shard.map((s) => [s.id, s.description.slice(0, perOption).trimEnd()]));
 }
 
-function rerankQuestions(finalists: SkillRecord[]): Question[] {
+function rerankQuestions(shortlist: SkillRecord[]): Question[] {
   return [
     {
       kind: "choice",
       key: "rerank",
       instructions: RERANK_INSTRUCTIONS,
-      options: Object.fromEntries(finalists.map((s) => [s.id, `${s.description} — ${s.excerpt}`])),
+      options: Object.fromEntries(shortlist.map((s) => [s.id, `${s.description} — ${s.excerpt}`])),
     },
-    ...finalists.map((s): Question => ({
+    ...shortlist.map((s): Question => ({
       kind: "boolean",
       key: `fits::${s.id}`,
       instructions: `Does the skill '${s.id}' do the specific thing the user's request asks for?`,
@@ -207,47 +212,63 @@ function rerankQuestions(finalists: SkillRecord[]): Question[] {
 
 function gateScores(firstRound: Map<string, Answer>): { action: number; named: number } {
   const oriented = ACTION_QUESTIONS.map((q) => {
-    const p = probabilityOf(firstRound, `gate::${q.key}`);
+    const p = probabilityIn(firstRound, `gate::${q.key}`);
     return q.inverted ? 1 - p : p;
   });
   return {
     action: oriented.reduce((sum, p) => sum + p, 0) / oriented.length,
-    named: probabilityOf(firstRound, "named"),
+    named: probabilityIn(firstRound, "named"),
   };
 }
 
-/**
- * Probability per option. A choice answer without probabilities counts as certain for the chosen
- * option. Options missing from a non-empty probability map count as 0.
- */
-function shardProbabilities(answer: Answer, shard: SkillRecord[]): Map<string, number> {
-  if (answer.kind !== "choice") throw new Error("shard answer is not a choice");
-  const ids = shard.map((s) => s.id);
-  if (!ids.includes(answer.choice)) {
-    throw new Error(`decision model chose "${answer.choice}", which is not an option`);
-  }
-  const explicit = Object.keys(answer.probabilities).length > 0;
-  return new Map(ids.map((id) => [id, explicit ? (answer.probabilities[id] ?? 0) : id === answer.choice ? 1 : 0]));
+function shardKey(index: number): string {
+  return `shard::${index}`;
 }
 
-function rankByProbability(probabilities: Map<string, number>): Ranked[] {
-  return [...probabilities].map(([id, probability]) => ({ id, probability })).sort(byProbability);
+/** The answers to call 1's shard `index`. The model is asked once per shard, so a missing round is a model fault. */
+function roundAt(rounds: readonly Map<string, Answer>[], index: number): Map<string, Answer> {
+  const round = rounds[index];
+  if (!round) throw new ClassifierError(`decision model returned no answers for "${shardKey(index)}"`);
+  return round;
 }
 
-function byProbability(a: Ranked, b: Ranked): number {
-  return b.probability - a.probability || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-
-function answerOf(answers: Map<string, Answer>, key: string): Answer {
+function answerIn(answers: Map<string, Answer>, key: string): Answer {
   const answer = answers.get(key);
-  if (!answer) throw new Error(`decision model returned no answer for ${key}`);
+  if (!answer) throw new ClassifierError(`decision model returned no answer for "${key}"`);
   return answer;
 }
 
-function probabilityOf(answers: Map<string, Answer>, key: string): number {
-  const answer = answerOf(answers, key);
-  if (answer.kind !== "boolean") throw new Error(`decision answer ${key} is not a boolean`);
+function choiceIn(answers: Map<string, Answer>, key: string): ChoiceAnswer {
+  const answer = answerIn(answers, key);
+  if (answer.kind !== "choice") throw new ClassifierError(`decision model returned no valid choice for "${key}"`);
+  return answer;
+}
+
+function probabilityIn(answers: Map<string, Answer>, key: string): number {
+  const answer = answerIn(answers, key);
+  if (answer.kind !== "boolean") throw new ClassifierError(`decision model returned no valid boolean for "${key}"`);
   return answer.probability;
+}
+
+/**
+ * Ranks one shard's options, best first. A choice answer without probabilities counts as certain for
+ * the chosen option. Options missing from a non-empty probability map count as 0.
+ */
+function rankShard(key: string, answer: ChoiceAnswer, shard: SkillRecord[]): Ranked[] {
+  if (!shard.some((s) => s.id === answer.choice)) {
+    throw new ClassifierError(`decision model returned an option that is not offered for "${key}"`);
+  }
+  const explicit = Object.keys(answer.probabilities).length > 0;
+  return shard
+    .map((skill): Ranked => ({
+      skill,
+      probability: explicit ? (answer.probabilities[skill.id] ?? 0) : skill.id === answer.choice ? 1 : 0,
+    }))
+    .sort(byProbability);
+}
+
+function byProbability(a: Ranked, b: Ranked): number {
+  return b.probability - a.probability || (a.skill.id < b.skill.id ? -1 : a.skill.id > b.skill.id ? 1 : 0);
 }
 
 function lexicalCandidates(lexical: LexicalRanker, task: string, skills: SkillRecord[], limit: number): FindResult["candidates"] {
@@ -272,7 +293,7 @@ async function withDeadline<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      const err = new Error(`decision model timed out after ${timeoutMs} ms`);
+      const err = new ClassifierError(`decision model timed out after ${timeoutMs} ms`);
       controller.abort(err);
       reject(err);
     }, timeoutMs);
@@ -297,6 +318,4 @@ function uniqueById(skills: readonly SkillRecord[]): SkillRecord[] {
   return unique;
 }
 
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+

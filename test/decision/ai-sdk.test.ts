@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Experimental_DecisionMockModelV4 } from "ai/test";
 import { fromSdkModel } from "../../src/decision/ai-sdk";
-import { DecisionAuthError, DecisionRefusedError, DecisionTimeoutError } from "../../src/decision/errors";
+import { DecisionAuthError, DecisionRefusedError, DecisionResponseError, DecisionTimeoutError } from "../../src/decision/errors";
 import type { Question } from "../../src/types";
 
 const formatQuestion: Question = {
@@ -13,6 +13,8 @@ const formatQuestion: Question = {
 const actsQuestion: Question = { kind: "boolean", key: "acts", instructions: "Does the user want an action?" };
 const state = { request: "Turn this markdown report into a Word document" };
 const fast = { baseDelayMs: 1 };
+/** Stands in for the config's timeoutMs; the adapter has no default of its own. */
+const budget = { timeoutMs: 5000 };
 
 /** An error shaped like the AI SDK's APICallError: the retry policy reads `statusCode`. */
 function providerError(statusCode: number): Error {
@@ -34,7 +36,7 @@ describe("fromSdkModel: question and answer mapping", () => {
         };
       },
     });
-    const model = fromSdkModel("typesafe-ai:jev-1.14.0", mock);
+    const model = fromSdkModel("typesafe-ai:jev-1.14.0", mock, budget);
 
     const answers = await model.decide({ state, questions: [formatQuestion, actsQuestion] });
 
@@ -62,7 +64,7 @@ describe("fromSdkModel: question and answer mapping", () => {
       doDecide: async () => ({ answers: { format: { type: "choice", choice: "pdf" } }, warnings: [] }),
     });
 
-    const answers = await fromSdkModel("m", mock).decide({ state, questions: [formatQuestion] });
+    const answers = await fromSdkModel("m", mock, budget).decide({ state, questions: [formatQuestion] });
 
     expect(answers.get("format")).toEqual({ kind: "choice", key: "format", choice: "pdf", probabilities: { pdf: 1 } });
   });
@@ -77,7 +79,7 @@ describe("fromSdkModel: failures", () => {
       }),
     });
 
-    const error = await fromSdkModel("m", mock, { retry: fast })
+    const error = await fromSdkModel("m", mock, { ...budget, retry: fast })
       .decide({ state, questions: [formatQuestion, actsQuestion] })
       .catch((e: unknown) => e);
 
@@ -94,7 +96,7 @@ describe("fromSdkModel: failures", () => {
       },
     });
 
-    const error = await fromSdkModel("m", mock, { retry: fast })
+    const error = await fromSdkModel("m", mock, { ...budget, retry: fast })
       .decide({ state, questions: [formatQuestion] })
       .catch((e: unknown) => e);
 
@@ -103,7 +105,7 @@ describe("fromSdkModel: failures", () => {
     expect(calls).toBe(1);
   });
 
-  test.each([429, 500, 529])("HTTP %i is retried until the model answers", async (status) => {
+  test.each([429, 502, 503, 504, 529])("HTTP %i is retried until the model answers", async (status) => {
     let calls = 0;
     const mock = new Experimental_DecisionMockModelV4({
       doDecide: async () => {
@@ -113,7 +115,7 @@ describe("fromSdkModel: failures", () => {
       },
     });
 
-    const answers = await fromSdkModel("m", mock, { retry: fast }).decide({ state, questions: [formatQuestion] });
+    const answers = await fromSdkModel("m", mock, { ...budget, retry: fast }).decide({ state, questions: [formatQuestion] });
 
     expect(calls).toBe(3);
     expect(answers.get("format")).toMatchObject({ choice: "tdd" });
@@ -129,9 +131,69 @@ describe("fromSdkModel: failures", () => {
     });
 
     await expect(
-      fromSdkModel("m", mock, { retry: fast }).decide({ state, questions: [formatQuestion] }),
+      fromSdkModel("m", mock, { ...budget, retry: fast }).decide({ state, questions: [formatQuestion] }),
     ).rejects.toThrow("HTTP 529");
     expect(calls).toBe(3);
+  });
+
+  test.each([500, 501])("HTTP %i is not retried: only rate limits and gateway or overload errors are", async (status) => {
+    let calls = 0;
+    const mock = new Experimental_DecisionMockModelV4({
+      doDecide: async () => {
+        calls++;
+        throw providerError(status);
+      },
+    });
+
+    await expect(
+      fromSdkModel("m", mock, { timeoutMs: 5000, retry: fast }).decide({ state, questions: [formatQuestion] }),
+    ).rejects.toThrow(`HTTP ${status}`);
+    expect(calls).toBe(1);
+  });
+
+  test("an answer set that does not match the questions fails with DecisionResponseError, without the SDK cause", async () => {
+    const mock = new Experimental_DecisionMockModelV4({
+      doDecide: async () => ({ answers: { acts: { type: "boolean", probability: 0.2 } }, warnings: [] }),
+    });
+
+    const error = await fromSdkModel("m", mock, budget)
+      .decide({ state, questions: [formatQuestion, actsQuestion] })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(DecisionResponseError);
+    expect((error as Error).name).toBe("DecisionResponseError");
+    expect((error as Error).message).toContain('"format"');
+    expect((error as Error).message).toContain('"acts"');
+    expect((error as Error).message).not.toContain(state.request);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  test("an answer of the wrong kind fails with DecisionResponseError naming that question", async () => {
+    const mock = new Experimental_DecisionMockModelV4({
+      doDecide: async () => ({
+        answers: {
+          format: { type: "choice", choice: "pdf" },
+          acts: { type: "choice", choice: "yes" },
+        },
+        warnings: [],
+      }),
+    });
+
+    const error = await fromSdkModel("m", mock, budget)
+      .decide({ state, questions: [formatQuestion, actsQuestion] })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(DecisionResponseError);
+    expect((error as Error).message).toContain('"acts"');
+  });
+
+  test("the timeout is a required option: fromSdkModel has no default budget of its own", () => {
+    const mock = new Experimental_DecisionMockModelV4({
+      doDecide: async () => ({ answers: {}, warnings: [] }),
+    });
+
+    // @ts-expect-error timeoutMs comes from the caller (config.timeoutMs); the adapter must not default it
+    expect(fromSdkModel("m", mock, {})).toBeDefined();
   });
 
   test("a client error other than auth is not retried", async () => {
@@ -144,7 +206,7 @@ describe("fromSdkModel: failures", () => {
     });
 
     await expect(
-      fromSdkModel("m", mock, { retry: fast }).decide({ state, questions: [formatQuestion] }),
+      fromSdkModel("m", mock, { ...budget, retry: fast }).decide({ state, questions: [formatQuestion] }),
     ).rejects.toThrow("HTTP 400");
     expect(calls).toBe(1);
   });

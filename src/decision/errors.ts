@@ -30,3 +30,25 @@ export class DecisionRefusedError extends Error {
     this.questionIds = questionIds;
   }
 }
+
+/** The model's answer does not match the questions asked. Names the question keys, never the answer content. */
+export class DecisionResponseError extends Error {
+  readonly questionKeys: string[];
+
+  constructor(questionKeys: readonly string[], detail: string) {
+    super(`decision model returned an unexpected answer for ${questionKeys.map((key) => `"${key}"`).join(", ")}: ${detail}`);
+    this.name = "DecisionResponseError";
+    this.questionKeys = [...questionKeys];
+  }
+}
+
+/** The configured decision model cannot be used: unknown id or missing key. `reason` is safe to show the agent. */
+export class DecisionUnavailableError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "DecisionUnavailableError";
+    this.reason = reason;
+  }
+}

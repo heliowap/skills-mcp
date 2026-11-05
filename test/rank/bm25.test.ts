@@ -46,7 +46,7 @@ describe("createBm25Ranker", () => {
     expect(ranker.rank("helper", [alpha, beta], 2).map((r) => r.id)).toEqual(["alpha", "beta"]);
   });
 
-  test("returns at most k matches and omits skills that share no term with the query", () => {
+  test("returns at most k matches and omits skills that share no term with the task", () => {
     expect(ranker.rank("notes", skills, 1).map((r) => r.id)).toEqual(["apple-notes"]);
     expect(ranker.rank("notes", skills, 10).map((r) => r.id)).toEqual(["apple-notes"]);
   });

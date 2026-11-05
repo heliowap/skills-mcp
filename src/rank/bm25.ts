@@ -3,8 +3,15 @@ import type { LexicalRanker, SkillRecord } from "../types";
 export const BM25_K1 = 1.2;
 export const BM25_B = 0.75;
 
+type SkillField = "id" | "name" | "description" | "excerpt";
+
 /** A hit in the id or name counts for more than a hit in the excerpt. */
-const FIELD_WEIGHTS = { id: 3, name: 3, description: 2, excerpt: 1 } as const;
+const FIELD_WEIGHTS: readonly { readonly field: SkillField; readonly weight: number }[] = [
+  { field: "id", weight: 3 },
+  { field: "name", weight: 3 },
+  { field: "description", weight: 2 },
+  { field: "excerpt", weight: 1 },
+];
 
 const STOPWORDS = new Set([
   "a", "about", "above", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at",
@@ -37,7 +44,7 @@ interface IndexedSkill {
 function indexSkill(skill: SkillRecord): IndexedSkill {
   const tf = new Map<string, number>();
   let length = 0;
-  for (const [field, weight] of Object.entries(FIELD_WEIGHTS) as [keyof typeof FIELD_WEIGHTS, number][]) {
+  for (const { field, weight } of FIELD_WEIGHTS) {
     const tokens = tokenize(skill[field]);
     for (const token of tokens) tf.set(token, (tf.get(token) ?? 0) + weight);
     length += tokens.length * weight;
@@ -47,12 +54,12 @@ function indexSkill(skill: SkillRecord): IndexedSkill {
 
 /**
  * BM25 over the id, name, description and excerpt, with the field weights above applied to term
- * frequency and length. Skills that match no query term are omitted. Equal scores sort by id.
+ * frequency and length. Skills that match no task term are omitted. Equal scores sort by id.
  */
 export function createBm25Ranker(): LexicalRanker {
   return {
-    rank(query, skills, k) {
-      const terms = [...new Set(tokenize(query))];
+    rank(task, skills, k) {
+      const terms = [...new Set(tokenize(task))];
       if (k <= 0 || terms.length === 0 || skills.length === 0) return [];
 
       const docs = skills.map(indexSkill);

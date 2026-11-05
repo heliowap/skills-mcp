@@ -18,9 +18,10 @@ export interface RunOptions {
 }
 
 /**
- * Runs `attempt` under one deadline. Retries HTTP 429 and 5xx with exponential
- * backoff, up to `maxAttempts`. Maps HTTP 401/403 to DecisionAuthError without
- * retrying. Enforces the deadline even when `attempt` ignores its signal.
+ * Runs `attempt` under one deadline. Retries the statuses in RETRYABLE_STATUSES
+ * with exponential backoff, up to `maxAttempts`. Maps HTTP 401/403 to
+ * DecisionAuthError without retrying. Enforces the deadline even when `attempt`
+ * ignores its signal.
  */
 export async function runWithRetry<T>(
   attempt: (signal: AbortSignal) => Promise<T>,
@@ -63,8 +64,11 @@ function statusOf(error: unknown): number | undefined {
   return typeof error.statusCode === "number" ? error.statusCode : undefined;
 }
 
+/** Rate limit, Anthropic overload, and the gateway and availability errors. Other 5xx (500, 501) fail at once. */
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504, 529]);
+
 function isRetryable(status: number | undefined): boolean {
-  return status === 429 || (status !== undefined && status >= 500 && status <= 599);
+  return status !== undefined && RETRYABLE_STATUSES.has(status);
 }
 
 /** Rejects as soon as `signal` aborts, even if `promise` never settles. */

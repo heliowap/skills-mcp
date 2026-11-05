@@ -1,14 +1,13 @@
 import { z } from "zod";
+import { ConfigSchema } from "../config";
+import type { Thresholds } from "../types";
 import table from "./providers.json";
 
 /** Which AI SDK factory builds the model. */
 const ProviderSchema = z.enum(["typesafe-ai", "gateway"]);
 
-const ThresholdsSchema = z.object({
-  action: z.number().min(0).max(1),
-  named: z.number().min(0).max(1),
-  fits: z.number().min(0).max(1),
-});
+/** The config's own threshold schema, so bounds and defaults are declared once. */
+const ThresholdsSchema = ConfigSchema.shape.decision.unwrap().shape.thresholds.unwrap().valueType;
 
 const EntrySchema = z.object({
   provider: ProviderSchema,
@@ -34,4 +33,19 @@ export function resolveKey(entry: ProviderEntry, env: Env): { name: string; valu
     if (value) return { name, value };
   }
   return undefined;
+}
+
+const DEFAULT_THRESHOLDS: Thresholds = ThresholdsSchema.parse({});
+
+/**
+ * The thresholds for one model. The config entry for that model wins, then the
+ * model's providers.json entry, then the config schema defaults. `table` is a
+ * parameter so tests can supply their own entries.
+ */
+export function resolveThresholds(
+  modelId: string,
+  configThresholds: Readonly<Partial<Record<string, Thresholds>>>,
+  table: Readonly<Record<string, ProviderEntry>> = providerTable,
+): Thresholds {
+  return configThresholds[modelId] ?? table[modelId]?.thresholds ?? DEFAULT_THRESHOLDS;
 }
