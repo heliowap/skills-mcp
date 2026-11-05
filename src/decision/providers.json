@@ -1,0 +1,12 @@
+{
+  "typesafe-ai:jev-1.14.0": {
+    "provider": "typesafe-ai",
+    "modelId": "jev-1.14.0",
+    "keyEnv": ["TYPESAFE_AI_API_KEY", "TYPESAFE_API_KEY"]
+  },
+  "gateway:typesafe-ai/jev": {
+    "provider": "gateway",
+    "modelId": "typesafe-ai/jev",
+    "keyEnv": ["AI_GATEWAY_API_KEY"]
+  }
+}
