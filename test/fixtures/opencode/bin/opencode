@@ -1,0 +1,24 @@
+#!/usr/bin/env bun
+// Stand-in for the opencode CLI in verify tests: `api` prints the file named by FAKE_OPENCODE_SKILLS and
+// `mcp list` prints the file named by FAKE_OPENCODE_MCP. When FAKE_OPENCODE_SETTLING names a path that does
+// not exist yet, the first `api` call creates it and answers with an empty list, as a freshly reloaded
+// server does. Any other command fails with exit 2.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const [command] = process.argv.slice(2);
+const sources: Record<string, string | undefined> = {
+  api: process.env.FAKE_OPENCODE_SKILLS,
+  mcp: process.env.FAKE_OPENCODE_MCP,
+};
+const file = sources[command ?? ""];
+if (file === undefined) {
+  process.stderr.write(`fake opencode: unsupported command ${command ?? "(none)"}\n`);
+  process.exit(2);
+}
+const settling = process.env.FAKE_OPENCODE_SETTLING;
+if (command === "api" && settling !== undefined && !existsSync(settling)) {
+  writeFileSync(settling, "seen\n");
+  process.stdout.write(JSON.stringify({ location: { directory: "" }, data: [] }));
+  process.exit(0);
+}
+process.stdout.write(readFileSync(file, "utf8"));

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Representative copy of the user's global config: same structures, secrets replaced by placeholders.
+  "model": "anthropic/claude-sonnet-4-5",
+  "instructions": ["~/.agents/AGENTS.md"],
+  "experimental": {
+    "subagent_depth": 2,
+  },
+  "worktree": {
+    "directory": "~/worktrees"
+  },
+  "permission": "allow",
+  "provider": {
+    "example": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:11555/v1",
+        "apiKey": "{env:EXAMPLE_API_KEY}"
+      }
+    }
+  },
+  "disabled_providers": [
+    "claude-bridge"
+  ],
+  "mcp": {
+    // Keys under mcp.servers are server names; OpenCode V2 reads them from here.
+    "servers": {
+      "playwright": {
+        "type": "local",
+        "disabled": true,
+        "command": [
+          "npx",
+          "-y",
+          "@playwright/mcp@latest"
+        ]
+      },
+      "chrome-devtools": {
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "chrome-devtools-mcp@latest"
+        ]
+      },
+      "testsprite": {
+        "type": "local",
+        "command": [
+          "/Users/fixture/.config/opencode/bin/testsprite-mcp.sh"
+        ]
+      },
+      "agent-desktop": {
+        "type": "local",
+        "command": [
+          "/Users/fixture/.local/bin/agent-desktop",
+          "mcp"
+        ]
+      }
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp/oauth",
+      "enabled": true
+    }
+  },
+  "plugins": [
+    "github:vercel/vercel-plugin",
+    "github:example/opencode-plugins#main::path:plugins/base-check",
+    // Plugins activate in array order; the cutover plugin stays last (docs/cutover.md).
+    "github:example/opencode-plugins#main::path:plugins/unpushed-work"
+  ]
+}
