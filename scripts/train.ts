@@ -34,7 +34,10 @@ export const SEED = 7;
 // Each epoch updates every weight once per batch, so cost grows with epochs × classes × features. 20 keeps the
 // full grid near 8 minutes at the planned real size (see the report), against about 20 minutes at 50.
 const EPOCHS = 20;
-const LEARNING_RATE = 1;
+// The step divides the batch-mean gradient, so a skill with about 8 rows barely moves at 1, and the abstain
+// class wins 99.9% of training rows. On the real train split, 10 reaches 99% training accuracy and 50 falls
+// back to 80%.
+const LEARNING_RATE = 10;
 /** A feature seen in fewer training texts is noise at this corpus size. */
 const MIN_DF = 2;
 const EXPANSION_WEIGHTS = [0.5, 1, 2] as const;
