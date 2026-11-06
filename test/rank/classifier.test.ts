@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createBm25Ranker } from "../../src/rank/bm25";
-import { createClassifier } from "../../src/rank/classifier";
-import type { Answer, DecisionModel, Question, SkillRecord, Thresholds } from "../../src/types";
+import { createClassifier, DEFAULT_LIMIT } from "../../src/rank/classifier";
+import type { Answer, DecisionModel, Question, SkillRecord, Thresholds, TrainedRanker, TrainedRanking } from "../../src/types";
 import { catalog, failingModel, hangingModel, scriptedModel, skill, type Script } from "./helpers";
 
 const thresholds: Thresholds = { action: 0.3, named: 0.5, fits: 0.3 };
@@ -244,5 +244,221 @@ describe("classifier invalid answers", () => {
     expect(result.ranker).toBe("bm25-fallback");
     expect(result.reason).toContain('"shard::0"');
     expect(result.reason).not.toContain("ghost-skill");
+  });
+});
+
+interface TrainedCall {
+  task: string;
+  k: number;
+  ids: string[];
+}
+
+/** A trained ranker that always returns `ranking` and records each call. */
+function trainedStub(ranking: TrainedRanking): TrainedRanker & { readonly calls: TrainedCall[] } {
+  const calls: TrainedCall[] = [];
+  return {
+    id: "trained:stub",
+    calls,
+    rank(task, skills, k) {
+      calls.push({ task, k, ids: skills.map((s) => s.id) });
+      return ranking;
+    },
+  };
+}
+
+function throwingTrained(message: string): TrainedRanker {
+  return {
+    id: "trained:throwing",
+    rank() {
+      throw new Error(message);
+    },
+  };
+}
+
+const pptxRanking: TrainedRanking = {
+  needsSkill: true,
+  suggestion: "pptx-author",
+  candidates: [
+    { id: "pptx-author", score: 0.9 },
+    { id: "apple-notes", score: 0.2 },
+  ],
+};
+const pptxCandidates = [
+  { id: "pptx-author", description: decks[0]!.description, score: 0.9 },
+  { id: "apple-notes", description: decks[1]!.description, score: 0.2 },
+];
+
+describe("classifier trained ranker without a model", () => {
+  test("answers from the trained ranker: its needsSkill and suggestion, with catalog descriptions", async () => {
+    const result = await classifierFor(undefined, decks, { trained: () => trainedStub(pptxRanking) }).find(deckRequest);
+
+    expect(result).toEqual({
+      needsSkill: true,
+      suggestion: "pptx-author",
+      candidates: pptxCandidates,
+      ranker: "trained",
+    });
+  });
+
+  test("a trained abstention is reported as needsSkill false with no suggestion", async () => {
+    const ranking: TrainedRanking = { needsSkill: false, suggestion: null, candidates: [{ id: "apple-notes", score: 0.1 }] };
+
+    const result = await classifierFor(undefined, decks, { trained: () => trainedStub(ranking) }).find(deckRequest);
+
+    expect(result.ranker).toBe("trained");
+    expect(result.needsSkill).toBe(false);
+    expect(result.suggestion).toBeNull();
+  });
+
+  test("the trained ranker sees the task, the whole catalog, and the limit as k", async () => {
+    const ranker = trainedStub(pptxRanking);
+
+    await classifierFor(undefined, decks, { trained: () => ranker }).find(deckRequest, { limit: 2 });
+
+    expect(ranker.calls).toEqual([{ task: deckRequest, k: 2, ids: decks.map((s) => s.id) }]);
+  });
+
+  test("candidates are capped at the limit, and at DEFAULT_LIMIT when none is given", async () => {
+    const seven = catalog(7);
+    const ranking: TrainedRanking = {
+      needsSkill: true,
+      suggestion: null,
+      candidates: seven.map((s, i) => ({ id: s.id, score: 1 - i * 0.1 })),
+    };
+    const classifier = classifierFor(undefined, seven, { trained: () => trainedStub(ranking) });
+
+    expect((await classifier.find("generic helper")).candidates).toHaveLength(DEFAULT_LIMIT);
+    const two = await classifier.find("generic helper", { limit: 2 });
+    expect(two.candidates.map((c) => c.id)).toEqual(seven.slice(0, 2).map((s) => s.id));
+  });
+
+  test("a suggestion outside the current catalog is dropped, and so are its candidate rows", async () => {
+    const ranking: TrainedRanking = {
+      needsSkill: true,
+      suggestion: "retired-skill",
+      candidates: [
+        { id: "retired-skill", score: 0.9 },
+        { id: "apple-notes", score: 0.4 },
+      ],
+    };
+
+    const result = await classifierFor(undefined, decks, { trained: () => trainedStub(ranking) }).find(deckRequest);
+
+    expect(result.suggestion).toBeNull();
+    expect(result.needsSkill).toBe(true);
+    expect(result.candidates.map((c) => c.id)).toEqual(["apple-notes"]);
+  });
+
+  test("needsSkill false never carries a suggestion, matching the model path", async () => {
+    const ranking: TrainedRanking = { needsSkill: false, suggestion: "pptx-author", candidates: pptxRanking.candidates };
+
+    const result = await classifierFor(undefined, decks, { trained: () => trainedStub(ranking) }).find(deckRequest);
+
+    expect(result.needsSkill).toBe(false);
+    expect(result.suggestion).toBeNull();
+  });
+
+  test("the trained option is read on every find", async () => {
+    let current: TrainedRanker | undefined;
+    const classifier = classifierFor(undefined, decks, { trained: () => current });
+
+    expect((await classifier.find(deckRequest)).ranker).toBe("bm25");
+    current = trainedStub(pptxRanking);
+    expect((await classifier.find(deckRequest)).ranker).toBe("trained");
+  });
+
+  test("a trained option that returns undefined gives the same result as no trained option", async () => {
+    const without = await classifierFor(undefined).find(deckRequest);
+    const withUndefined = await classifierFor(undefined, decks, { trained: () => undefined }).find(deckRequest);
+
+    expect(withUndefined).toEqual(without);
+    expect(withUndefined.ranker).toBe("bm25");
+  });
+
+  test("a throwing trained ranker falls through to lexical ranking with a reason, and find does not throw", async () => {
+    const result = await classifierFor(undefined, decks, {
+      trained: () => throwingTrained("weights file is corrupt"),
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25");
+    expect(result.needsSkill).toBeNull();
+    expect(result.suggestion).toBeNull();
+    expect(result.reason).toContain("weights file is corrupt");
+    expect(result.candidates[0]?.id).toBe("pptx-author");
+  });
+
+  test("a trained option that throws when read falls through to lexical ranking the same way", async () => {
+    const result = await classifierFor(undefined, decks, {
+      trained: () => {
+        throw new Error("cannot read the trained artifact");
+      },
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25");
+    expect(result.reason).toContain("cannot read the trained artifact");
+    expect(result.candidates[0]?.id).toBe("pptx-author");
+  });
+});
+
+describe("classifier trained fallback", () => {
+  test("a model that throws answers from the trained ranker as trained-fallback, with model and reason", async () => {
+    const result = await classifierFor(failingModel("provider returned 403"), decks, {
+      trained: () => trainedStub(pptxRanking),
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("trained-fallback");
+    expect(result.model).toBe("stub:failing");
+    expect(result.reason).toContain("403");
+    expect(result.needsSkill).toBe(true);
+    expect(result.suggestion).toBe("pptx-author");
+    expect(result.candidates).toEqual(pptxCandidates);
+  });
+
+  test("a model that times out answers from the trained ranker, with the timeout as reason", async () => {
+    const result = await classifierFor(hangingModel(), decks, {
+      timeoutMs: 20,
+      trained: () => trainedStub(pptxRanking),
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("trained-fallback");
+    expect(result.reason).toMatch(/timed out/);
+    expect(result.suggestion).toBe("pptx-author");
+  });
+
+  test("a trained-fallback can abstain: needsSkill false and no suggestion", async () => {
+    const ranking: TrainedRanking = { needsSkill: false, suggestion: null, candidates: [] };
+
+    const result = await classifierFor(failingModel("provider returned 503"), decks, {
+      trained: () => trainedStub(ranking),
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("trained-fallback");
+    expect(result.needsSkill).toBe(false);
+    expect(result.suggestion).toBeNull();
+  });
+
+  test("a model that throws and a trained ranker that throws give bm25-fallback with both reasons, without throwing", async () => {
+    const result = await classifierFor(failingModel("provider returned 403"), decks, {
+      trained: () => throwingTrained("weights file is corrupt"),
+    }).find(deckRequest);
+
+    expect(result.ranker).toBe("bm25-fallback");
+    expect(result.model).toBe("stub:failing");
+    expect(result.reason).toContain("403");
+    expect(result.reason).toContain("weights file is corrupt");
+    expect(result.needsSkill).toBeNull();
+    expect(result.suggestion).toBeNull();
+    expect(result.candidates[0]?.id).toBe("pptx-author");
+  });
+
+  test("a model that answers: the trained ranker is never called", async () => {
+    const ranker = trainedStub(pptxRanking);
+    const model = scriptedModel({ ...pickPptx, action: actionHigh, winner: "pptx-author", fits: { "pptx-author": 0.8 } });
+
+    const result = await classifierFor(model, decks, { trained: () => ranker }).find(deckRequest);
+
+    expect(result.ranker).toBe("model");
+    expect(result.suggestion).toBe("pptx-author");
+    expect(ranker.calls).toEqual([]);
   });
 });
