@@ -293,7 +293,7 @@ The decision model, thresholds, `shardSize` and `timeoutMs` are read when the se
 
 ### Decision models
 
-`decision.model` must name an entry in [`src/decision/providers.json`](src/decision/providers.json):
+`decision.model` must name an entry in [`src/decision/providers.json`](src/decision/providers.json), listed below. Without one, `find` uses the trained ranker if its artifacts are present (`"ranker": "trained"`), and otherwise ranks lexically (`"ranker": "bm25"`).
 
 | Model id | Provider | Key variables (first one set wins) | Thresholds in providers.json |
 |---|---|---|---|
@@ -302,9 +302,34 @@ The decision model, thresholds, `shardSize` and `timeoutMs` are read when the se
 
 Threshold precedence, per model: a `decision.thresholds` entry in the config wins. Within that entry, a missing field takes the config default (0.30, 0.50 or 0.30), not the providers.json value. With no config entry, providers.json applies, and then the defaults.
 
+A missing key does not stop the server. `find` falls back to the trained ranker if its artifacts are present (`"ranker": "trained-fallback"`), otherwise to lexical ranking (`"ranker": "bm25-fallback"`), and gives the reason. Thresholds for each model can be set under `decision.thresholds.<model id>` with `action`, `named` and `fits` between 0 and 1.
+
+The `ranker` field is one of `model`, `trained`, `trained-fallback`, `bm25` and `bm25-fallback`.
+
+### Trained fallback (optional)
+
+A trained ranker scores the catalog with weights learned offline from example tasks. Unlike lexical ranking, it can decide that no skill applies. It is opt-in: the server has no trained artifacts until you train them on your own machine, and without them nothing changes.
+
+- **Placement.** The decision model stays primary. The trained ranker answers when no decision model is configured (`"ranker": "trained"`), or when the configured model fails (`"trained-fallback"`, with the reason).
+- **Where it lives.** Under the cache: `~/.cache/skills-mcp/trained/` by default, or `trained/` inside `SKILLS_MCP_CACHE`.
+- **Privacy.** The directory holds the text of your skills, the example tasks and the teacher's answers. Nothing in it is written into this repository, and it is not committed.
+- **How to train.** `teach` asks the teacher, so it needs the key for `typesafe-ai:jev-1.14.0` from the table above. Write the example-task batches between `plan` and `check`, by hand or with an agent:
+
+  ```sh
+  bun run train-data plan         # plan the batches
+  bun run train-data check --all  # validate the batches
+  bun run train-data teach        # ask the teacher and keep the rows it agrees with
+  bun run train-data topup        # more batches for skills with few kept examples
+  bun run train                   # fit and write the artifacts; no network
+  ```
+
+  Restart the server afterwards: the artifacts are read at startup and on rebuild.
+- **Staleness.** A change to any `SKILL.md` in the catalog makes the trained ranker stale. The server then stops using it, reports a warning and ranks lexically, until `teach` and `train` run again.
+- **Results.** The measured numbers and the target comparison are in [docs/eval.md](docs/eval.md#trained-ranker).
+
 Keys are read from the environment by name when the server starts. They never go in the config file.
 
-With no usable key the server still starts. `find` falls back to the lexical ranker, `ranker` is `bm25-fallback`, and `reason` names the variable to set:
+With no usable key the server still starts. `find` falls back as described above (`trained-fallback` or `bm25-fallback`), and `reason` names the variable to set:
 
 ```text
 no API key for "typesafe-ai:jev-1.14.0": set TYPESAFE_AI_API_KEY or TYPESAFE_API_KEY

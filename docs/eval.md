@@ -4,6 +4,7 @@ How the `find` classifier was measured on the user's real catalog, what it score
 
 - **Measured at:** HEAD `b078c53` with the P7 files uncommitted, on 2026-11-05. The HEAD moved from `73d97da` to `b078c53` during the work (a coverage commit by another package). Nothing in P7 depends on that commit.
 - **Catalog:** 179 served skills from the six sources in `~/.config/skills-mcp/config.json`, built offline through `createApp`. Catalog hash (first 12 hex characters of the sorted-id hash): `dc3fb80e5de9`.
+- **Catalog since then:** 180 served skills, hash `52a7ec8b1c61`. The catalog hash changed, so the Jev cache was refilled for it. The tables below are the 179-skill measurement and are kept as recorded; the current rows are in [Trained ranker](#trained-ranker).
 - **Model:** `typesafe-ai:jev-1.14.0`, key from `TYPESAFE_API_KEY`.
 
 ## Results
@@ -97,3 +98,85 @@ bun run eval -- --ranker typesafe-ai:jev-1.14.0 --sweep   # threshold sweep over
 - The model run uses the thresholds `providers.json` or the config resolves for that model. The defaults row is the `cookbook defaults` column of the sweep output.
 - To force live calls for every request, delete `eval/cache/*.json` (keep `eval/cache/.gitignore`). This costs about 180 calls.
 - After changing thresholds in `providers.json`, the model run replays the cache and makes no API call.
+
+## Trained ranker
+
+A trained ranker scores the catalog with weights learned offline from example tasks, and it can decide that no skill applies. It is measured on the same 60 requests as the model rows. The work package is [plan-trained-ranker.md](plan-trained-ranker.md), W9.
+
+- **Measured at:** HEAD `c150f7f` on branch `trained-ranker`. Catalog: 180 served skills, hash `52a7ec8b1c61`.
+- **Model:** a softmax over word and character n-gram features, with L2 1e-5, `noneWeight` 1, `maxFeatures` 16384 and `suggestThreshold` 0. Expansions are added to BM25 with `expansionWeight` 0.5. The grid had 24 settings and took about 2.2 minutes.
+- **Artifacts:** under `trainedDir()` (`trained/` in the cache). Nothing is written into the repository.
+
+### Method
+
+**Data** (`bun run train-data`):
+
+- `plan` groups skills into families and cuts them into batches of at most 15. Generators aim for 10 positive tasks per skill (3 situational, 2 terse, 2 led by a symptom, 1 naming the tool, 1 naming neither tool nor skill, 1 mid-task). `check` accepts 8 to 12. Negatives come in three styles: everyday, conceptual and near-miss-tool.
+- `check` rejects a batch with a bad schema or count, duplicates, a copy of a description, or text that matches an eval request.
+- The result is 2,276 generated examples: 1,976 positives (176 of them from one top-up round) and 300 negatives.
+- **Teacher.** Jev (`typesafe-ai:jev-1.14.0`) runs through the real classifier at the configured thresholds. A positive is kept only when Jev suggests its own skill, and a negative only when Jev suggests nothing.
+- **Kept:** 1,481 of 1,976 positives (74.9%) and 207 of 300 negatives (69.0%). Dropped positives: 306 with no suggestion, 175 with another skill, 14 teacher fallbacks. Dropped negatives: 93 where Jev suggested a skill.
+- **Weak skills** after one top-up round: `context7-mcp` (4 kept positives) and `grill-me` (5). Both are below 6, and both are close to `find-docs` and `grilling`.
+- **Split.** Validation holds 303 positives and 38 negatives. The rest is training.
+
+**Fit and selection** (`bun run train`). The fit picks its settings on the training split and its suggest threshold on validation. The first run underfit and always abstained. Scaling L2 per epoch and raising the learning rate to 10 fixed that (commit `c150f7f`).
+
+**Leakage guard.** `eval` stops if any kept training row shares text with an eval request.
+
+### Results
+
+Covered requests: 40. Uncovered: 20. Wrong and top-1 are over the covered requests; needless and correct abstentions are over the uncovered ones.
+
+| ranker | top-1 (covered) | top-3 (covered) | wrong (covered) | needless (uncovered) | correct abstentions (uncovered) | p50 ms | p95 ms |
+|---|---|---|---|---|---|---|---|
+| bm25 | 25/40 (62.5%) | 28/40 (70.0%) | cannot abstain (top-1 wrong 15/40) | cannot abstain (17/20 get a candidate) | cannot abstain | 3 | 4 |
+| bm25-expanded | 27/40 (67.5%) | 33/40 (82.5%) | cannot abstain (top-1 wrong 13/40) | cannot abstain (18/20 get a candidate) | cannot abstain | 6 | 7 |
+| trained | **31/40 (77.5%)** | 36/40 (90.0%) | 15/40 (37.5%) | 0/20 (0.0%) | 20/20 (100.0%) | under 1 (table shows 0) | under 1 (table shows 0) |
+| typesafe-ai:jev-1.14.0 (0.25 / 0.50 / 0.35) | not reported | 40/40 (100.0%) | 2/40 (5.0%) | 0/20 (0.0%) | 20/20 (100.0%) | 384 | 649 |
+
+- The **bm25** row is from the orchestrator's run at `c150f7f`. The **bm25-expanded**, **trained** and **Jev** rows were re-run from the eval script at `c150f7f`.
+- **Trained wrong, split.** The 15 wrong answers are 3 wrong-skill suggestions (`c25`, `c36`, `c37`) and 12 abstentions on covered requests (`c01`, `c02`, `c04`, `c09`, `c17`, `c21`, `c26`, `c27`, `c32`, `c33`, `c34`, `c40`). The eval script prints only the total, so this split came from a one-off tally over the same run. It is not in the repository.
+- **Trained latency** is under 1 ms per find. The table rounds to whole milliseconds, so it prints 0. The Jev latencies are from the live pass that filled its cache.
+- **Gold recall** for the trained ranker: the gold skill is in the top 20 for 38/40 covered requests (95.0%), in the top 40 for 39/40, and in the top 60 for 39/40. A prefilter that passes the top 20 to a decision model would keep 95% of the gold skills. It is not implemented.
+
+### Target
+
+The plan's target was top-1 at least 32/40, at least 15/20 correct abstentions, and p95 at most 10 ms.
+
+| criterion | target | trained | result |
+|---|---|---|---|
+| top-1 (covered) | at least 32/40 | 31/40 | **missed by one request** |
+| correct abstentions (uncovered) | at least 15/20 | 20/20 | met |
+| p95 latency | at most 10 ms | under 1 ms | met |
+
+The top-1 miss is reported, not hidden. Whether the trained ranker ships as a fallback is the user's decision.
+
+### Caveats
+
+- **Small set.** Each covered request is 2.5 points of top-1. The trained ranker's lead over expanded BM25 is four requests (31 against 27).
+- **Authorship.** The eval requests were written by an agent that had read the skill descriptions, so the scores are optimistic.
+- **Teacher bias.** Only examples Jev agrees with are kept. The 306 positives Jev could not place are not in the training data, so the model learns the phrasings Jev already handles. `bun run train-data stats` reports the keep rate for each skill.
+- **Validation disagrees with the eval.** On the 303 generated validation positives, trained top-1 is 169 (55.8%) and expanded BM25 is 219 (72.3%). The validation split is generated and filtered by the same process as the training data, so it is not an independent test. The two results point in opposite directions, and the cause is not established.
+- **Staleness.** Any change to a `SKILL.md` makes the artifacts stale for that skill. The trained ranker is then left out, with a warning, until `teach` and `train` run again. The server reads artifacts at startup and on rebuild.
+- **Jev cache.** The Jev cache was refilled for the new catalog hash, because cache entries are keyed by it and the old ones no longer match. The P7 tables above describe the 179-skill catalog.
+- **Placement.** The model stays primary. The trained ranker answers only when no model is configured or when the model fails. The model row here is an offline replay of the cache, so it does not measure a live run at a later date.
+
+### How to re-run
+
+From the repository root. The example-task batches are written between `plan` and `check`, by hand or with an agent.
+
+```sh
+bun run train-data plan          # plan the batches under trainedDir()
+bun run train-data check --all   # validate the batches that were written
+bun run train-data teach         # ask Jev (needs a Jev key); keeps the rows it agrees with
+bun run train-data topup         # batches for skills with fewer than 6 kept positives
+bun run train-data teach         # cached; only the new rows cost calls
+bun run train-data stats         # counts per skill
+bun run train                    # fit and write the artifacts; no network
+bun run eval -- --ranker trained
+bun run eval -- --ranker bm25-expanded
+bun run eval -- --ranker typesafe-ai:jev-1.14.0
+```
+
+- `eval -- --ranker trained` fails with a message that names `bun run train` when the artifacts are missing.
+- The row for `trained` prints the gold recall at K = 20, 40 and 60 after the table.
