@@ -11,6 +11,8 @@
     "budget": "bun scripts/budget.ts",
     "coverage": "bun scripts/coverage.ts",
     "eval": "bun scripts/eval.ts",
+    "train-data": "bun scripts/train-data.ts",
+    "train": "bun scripts/train.ts",
     "cutover": "bun scripts/cutover.ts",
     "verify:all": "bun run typecheck && bun test && bun run budget"
   },
