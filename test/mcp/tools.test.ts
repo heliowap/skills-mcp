@@ -7,6 +7,7 @@ import { connectInProcess, type InProcessClient } from "../../src/mcp/inprocess"
 import { buildServer } from "../../src/mcp/server";
 import { createGithubAdapter } from "../../src/sources/github";
 import { defaultAdapters } from "../../src/sources/registry";
+import { SourceError } from "../../src/sources/shared";
 import { makeRemote, makeTempDir } from "../sources/helpers";
 import { defaultConfig, useSandbox } from "./helpers";
 
@@ -129,6 +130,25 @@ describe("tool contract", () => {
 });
 
 describe("sources tool: who may add and remove which sources", () => {
+  test("add reports a failed cache fallback as its own warning, even when the online error is long", async () => {
+    const client = await connect({
+      adapters: {
+        ...defaultAdapters,
+        github: {
+          sync: async (_spec: unknown, _cache: string, opts: { offline: boolean }) => {
+            throw new SourceError(opts.offline ? "no cached copy" : "x".repeat(400));
+          },
+        },
+      },
+    });
+
+    const result = await call(client, "sources", { action: "add", kind: "github", id: "acme", repo: "acme/skills" });
+
+    expect((result.structuredContent as SourcesStructured).warnings).toContain(
+      "source acme: cached copy unavailable (no cached copy)",
+    );
+  });
+
   test("add refuses a command source and writes nothing to the config", async () => {
     const client = await connect();
 

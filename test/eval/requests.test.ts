@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import {
-  EvalError,
-  parseRequests,
-  REQUESTS_PATH,
-} from "../../scripts/eval-data";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EvalError, parseRequests, readEvalRequests, REQUESTS_PATH } from "../../scripts/eval-data";
 
 const line = (fields: object) => JSON.stringify(fields);
 
@@ -52,6 +51,27 @@ describe("parseRequests", () => {
 
   test("rejects a line that is not JSON, naming the line", () => {
     expect(() => parseRequests("not json")).toThrow(/line 1/);
+  });
+
+  test("reports every bad line, not only the first", () => {
+    const text = ["not json", line({ id: "x", kind: "random", text: "a", gold: null })].join("\n");
+
+    expect(() => parseRequests(text)).toThrow(/line 1: not JSON/);
+    expect(() => parseRequests(text)).toThrow(/line 2: /);
+  });
+});
+
+describe("readEvalRequests", () => {
+  test("reads the request file it is given", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "skills-mcp-requests-"));
+    try {
+      const path = join(dir, "requests.jsonl");
+      await writeFile(path, `${line({ id: "u1", kind: "everyday", text: "what is 15% of 80", gold: null })}\n`);
+
+      expect((await readEvalRequests(path)).map((r) => r.id)).toEqual(["u1"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

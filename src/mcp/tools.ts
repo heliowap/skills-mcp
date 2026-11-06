@@ -5,7 +5,7 @@ import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { App } from "../app";
 import { MAX_REPO_SPEC_CHARS } from "../sources/github";
-import type { SyncOutcome } from "../sources/registry";
+import { failureReasons, type SyncOutcome } from "../sources/registry";
 import { MAX_RELATIVE_PATH_CHARS, MAX_SEGMENT_CHARS } from "../sources/shared";
 import { messageOf, sanitizeInline } from "../text";
 import type { FindResult, SourceSpec } from "../types";
@@ -271,7 +271,7 @@ function sourcesResult(
 }
 
 function failuresOf(outcomes: SyncOutcome[]): { id: string; error: string }[] {
-  return outcomes.flatMap((o) => (o.ok ? [] : [{ id: o.sourceId, error: o.error }]));
+  return outcomes.flatMap((o) => (o.ok ? [] : failureReasons(o).map((error) => ({ id: o.sourceId, error }))));
 }
 
 function warningsOf(outcomes: SyncOutcome[]): string[] {

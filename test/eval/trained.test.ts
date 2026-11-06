@@ -13,9 +13,7 @@ import {
   main,
   parseArgs,
 } from "../../scripts/eval";
-import {
-  EvalError,
-} from "../../scripts/eval-data";
+import { EvalError } from "../../scripts/eval-data";
 
 const FIXTURE_SKILLS = join(import.meta.dir, "..", "fixtures", "trained", "skills");
 const SKILL_IDS = ["pdf", "setup-ci", "setup-db", "setup-env"];

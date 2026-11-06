@@ -9,7 +9,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { BUILTIN_SKILL_IDS, PLUGIN_MCP_SERVER_IDS } from "../opencode-plugin/skills-cutover/server";
 import { messageOf } from "../src/text";
-import { OpenCodeApiError, readSkillListing, runOpenCodeApi } from "./opencode-api";
+import { hasDescription, isAutoinvokeHidden, OpenCodeApiError, readSkillListing, runOpenCodeApi } from "./opencode-api";
 
 /** The name the skills server gets under mcp.servers. */
 export const SKILLS_SERVER = "skills";
@@ -604,14 +604,19 @@ async function newestBackup(config: string): Promise<string> {
   return backupPath(config, newest);
 }
 
-/** Runs the opencode CLI through the shared OpenCode runner: no shell, a timeout and a byte cap. */
-async function runOpencode(bin: string, args: string[], env: Env): Promise<string> {
+/** Runs an OpenCode call and reports its failures as the cutover error every command raises. */
+async function withCutoverErrors<T>(run: () => Promise<T>): Promise<T> {
   try {
-    return await runOpenCodeApi(args, { bin, env });
+    return await run();
   } catch (err) {
     if (err instanceof OpenCodeApiError) throw new CutoverError(err.message);
     throw err;
   }
+}
+
+/** Runs the opencode CLI through the shared OpenCode runner: no shell, a timeout and a byte cap. */
+function runOpencode(bin: string, args: string[], env: Env): Promise<string> {
+  return withCutoverErrors(() => runOpenCodeApi(args, { bin, env }));
 }
 
 // ---------------------------------------------------------------------------
@@ -673,10 +678,10 @@ export function parseMcpList(text: string): Map<string, string> {
 
 /** One read of OpenCode's state, as report lines and a count of failed checks. */
 async function verifyOnce(dir: string, bin: string, env: Env): Promise<{ lines: string[]; failures: number }> {
-  const listing = await readSkillListing({ cwd: dir, bin, env });
+  const listing = await withCutoverErrors(() => readSkillListing({ cwd: dir, bin, env }));
   // OpenCode advertises a skill when it has a description and is not autoinvoke: false.
   const advertised = listing.data
-    .filter((skill) => (skill.description ?? "").trim() !== "" && skill.autoinvoke !== false)
+    .filter((skill) => hasDescription(skill) && !isAutoinvokeHidden(skill))
     .map((skill) => skill.id)
     .sort();
   const expected = [...BUILTIN_SKILL_IDS].sort();

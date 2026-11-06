@@ -62,6 +62,14 @@ async function verifyWith(skills: string, mcp: string, extraEnv: Record<string, 
 }
 
 describe("verify", () => {
+  test("accepts a listing whose entries carry no path, as the listing did before the shared schema", async () => {
+    const result = await verifyWith(
+      JSON.stringify({ data: BUILTINS.map(({ id, description }) => ({ id, description })) }),
+      HEALTHY_MCP,
+    );
+    expect(result.code).toBe(0);
+  });
+
   test("passes when only the builtins are advertised and the servers are in the expected state", async () => {
     const result = await verifyWith(
       listing([...BUILTINS, { id: "hidden", description: "hidden", autoinvoke: false }]),
