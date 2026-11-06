@@ -4,6 +4,7 @@ import { buildCatalog } from "./catalog";
 import { loadConfig } from "./config";
 import { resolveDecisionModel } from "./decision/ai-sdk";
 import { type Env, resolveThresholds } from "./decision/providers";
+import { trainedDir } from "./paths";
 import { createBm25Ranker } from "./rank/bm25";
 import { createClassifier } from "./rank/classifier";
 import {
@@ -15,7 +16,12 @@ import {
   syncSources,
 } from "./sources/registry";
 import { SourceError } from "./sources/shared";
-import type { Catalog, Classifier, SourceSpec } from "./types";
+import { sanitizeInline } from "./text";
+import { loadExpansions, loadTrainedRanker } from "./trained/artifact";
+import type { Catalog, Classifier, LexicalRanker, SkillRecord, SourceSpec, TrainedRanker } from "./types";
+
+/** The reason `loadTrainedRanker` gives when no model was ever trained. Absence is not a problem to report. */
+const NOT_TRAINED = "model/manifest.json is missing";
 
 export interface AppOptions {
   /** Holds the decision-model keys. Defaults to process.env. */
@@ -44,9 +50,38 @@ export interface App {
   onRebuild(listener: () => void): () => void;
 }
 
+/** What ranks a task: the trained ranker when its artifacts are valid, and the lexical ranker always. */
+interface Ranking {
+  trained?: TrainedRanker;
+  lexical: LexicalRanker;
+}
+
 interface Built {
   catalog: Catalog;
   warnings: string[];
+  ranking: Ranking;
+}
+
+/**
+ * Loads the trained artifacts for these skills. Stale or invalid artifacts leave the trained ranker
+ * out and add one warning with the reason; absent artifacts add nothing. Expansions feed BM25 when
+ * they load, and a stale expansion is ignored per skill by the loader.
+ */
+async function loadRanking(skills: readonly SkillRecord[], warnings: string[]): Promise<Ranking> {
+  const dir = trainedDir();
+  const loaded = await loadTrainedRanker(dir, skills);
+  let trained: TrainedRanker | undefined;
+  if ("unavailable" in loaded) {
+    if (loaded.unavailable !== NOT_TRAINED) warnings.push(`trained ranker unavailable: ${sanitizeInline(loaded.unavailable)}`);
+  } else {
+    trained = loaded;
+  }
+
+  const expansions = await loadExpansions(dir);
+  const lexical = expansions
+    ? createBm25Ranker({ expansions: (s) => expansions.examplesFor(s), expansionWeight: expansions.weight })
+    : createBm25Ranker();
+  return { trained, lexical };
 }
 
 /**
@@ -70,7 +105,9 @@ export async function createApp(options: AppOptions = {}): Promise<App> {
     }
     const trustedSources = new Set(config.sources.filter((s) => s.kind === "local").map((s) => s.id));
     const built = await buildCatalog(materialized, { trustedSources });
-    return { catalog: built.catalog, warnings: [...warnings, ...built.warnings] };
+    const allWarnings = [...warnings, ...built.warnings];
+    const ranking = await loadRanking(built.catalog.all(), allWarnings);
+    return { catalog: built.catalog, warnings: allWarnings, ranking };
   };
 
   let current = await materialize();
@@ -83,7 +120,9 @@ export async function createApp(options: AppOptions = {}): Promise<App> {
   const model = resolveDecisionModel(config.decision.model, env, { timeoutMs: config.timeoutMs });
   const classifier = createClassifier({
     skills: () => current.catalog.all(),
-    lexical: createBm25Ranker(),
+    // Read per call, like `skills`, so a rebuild swaps the lexical ranker and expansions in with the catalog.
+    lexical: { rank: (task, skills, k) => current.ranking.lexical.rank(task, skills, k) },
+    trained: () => current.ranking.trained,
     model,
     thresholds: resolveThresholds(config.decision.model ?? "", config.decision.thresholds),
     shardSize: config.shardSize,
