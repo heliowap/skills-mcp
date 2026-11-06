@@ -20,9 +20,6 @@ import { sanitizeInline } from "./text";
 import { loadExpansions, loadTrainedRanker } from "./trained/artifact";
 import type { Catalog, Classifier, LexicalRanker, SkillRecord, SourceSpec, TrainedRanker } from "./types";
 
-/** The reason `loadTrainedRanker` gives when no model was ever trained. Absence is not a problem to report. */
-const NOT_TRAINED = "model/manifest.json is missing";
-
 export interface AppOptions {
   /** Holds the decision-model keys. Defaults to process.env. */
   env?: Env;
@@ -72,7 +69,8 @@ async function loadRanking(skills: readonly SkillRecord[], warnings: string[]): 
   const loaded = await loadTrainedRanker(dir, skills);
   let trained: TrainedRanker | undefined;
   if ("unavailable" in loaded) {
-    if (loaded.unavailable !== NOT_TRAINED) warnings.push(`trained ranker unavailable: ${sanitizeInline(loaded.unavailable)}`);
+    // Never trained is not a problem to report; a stale or invalid model is.
+    if (!loaded.missing) warnings.push(`trained ranker unavailable: ${sanitizeInline(loaded.unavailable)}`);
   } else {
     trained = loaded;
   }

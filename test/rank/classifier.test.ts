@@ -462,3 +462,28 @@ describe("classifier trained fallback", () => {
     expect(ranker.calls).toEqual([]);
   });
 });
+
+describe("classifier lexical index reuse", () => {
+  test("two finds over the same catalog build the BM25 index once", async () => {
+    // Each index build asks for the expansions of every skill once, so the count is the number of builds.
+    let builds = 0;
+    const counted = createBm25Ranker({
+      expansions: () => {
+        builds += 1;
+        return [];
+      },
+    });
+    const classifier = createClassifier({
+      skills: () => decks,
+      lexical: counted,
+      thresholds,
+      shardSize: 120,
+      timeoutMs: 1000,
+    });
+
+    await classifier.find("make a PowerPoint deck");
+    await classifier.find("take notes in Apple Notes");
+
+    expect(builds).toBe(decks.length);
+  });
+});

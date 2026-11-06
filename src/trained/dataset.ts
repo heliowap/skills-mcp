@@ -3,9 +3,9 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { FindResult, SkillId } from "../types";
+import { type FindResult, type Ranker, RANKERS, type SkillId } from "../types";
 
-/** The class of "no skill applies" in the trained ranker's softmax. */
+/** The class of "no skill applies" in the trained ranker's softmax. Every trained module imports it from here. */
 export const NONE_CLASS = "__none__";
 
 /** Skills per generated batch. */
@@ -53,7 +53,7 @@ export type DropReason = (typeof DROP_REASONS)[number];
 export interface TeacherRecord {
   suggestion: SkillId | null;
   needsSkill: boolean | null;
-  ranker: FindResult["ranker"] | null;
+  ranker: Ranker | null;
 }
 
 export interface DatasetRow extends Example {
@@ -66,8 +66,6 @@ export interface DatasetRow extends Example {
 
 /** The teacher record for a row dropped before the teacher was asked. */
 export const NO_TEACHER: TeacherRecord = { suggestion: null, needsSkill: null, ranker: null };
-
-const RANKERS = ["model", "bm25", "bm25-fallback", "trained", "trained-fallback"] as const;
 
 export const DatasetRowSchema: z.ZodType<DatasetRow> = z.object({
   skillId: z.string().min(1).nullable(),

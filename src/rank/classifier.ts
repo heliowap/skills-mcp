@@ -377,8 +377,16 @@ async function withDeadline<T>(
   }
 }
 
+/**
+ * Deduplicated skills per input array. The lexical ranker keys its index on the array it receives, so
+ * the same catalog array must come back as the same array, or every `find` rebuilds the index.
+ */
+const uniqueByInput = new WeakMap<readonly SkillRecord[], SkillRecord[]>();
+
 /** Keeps the first skill for each id, so option keys are unique. */
 function uniqueById(skills: readonly SkillRecord[]): SkillRecord[] {
+  const cached = uniqueByInput.get(skills);
+  if (cached) return cached;
   const seen = new Set<string>();
   const unique: SkillRecord[] = [];
   for (const skill of skills) {
@@ -386,6 +394,7 @@ function uniqueById(skills: readonly SkillRecord[]): SkillRecord[] {
     seen.add(skill.id);
     unique.push(skill);
   }
+  uniqueByInput.set(skills, unique);
   return unique;
 }
 

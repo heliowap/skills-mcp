@@ -1,9 +1,8 @@
 // Multinomial logistic regression (softmax) trained by seeded mini-batch gradient descent.
 
+import { NONE_CLASS } from "./dataset";
 import type { SparseVector } from "./features";
 
-// Mirrors NONE_CLASS in dataset.ts, which does not exist yet; keep the two equal when it does.
-const NONE_CLASS = "__none__";
 const BATCH_SIZE = 32;
 
 /** Classes × (dims + 1) weights, row-major; the bias of each class is its last entry. */

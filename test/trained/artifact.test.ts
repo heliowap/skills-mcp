@@ -130,7 +130,16 @@ describe("writeTrainedArtifacts and loadTrainedRanker", () => {
     expect(ranker.id).toMatch(/^trained:[0-9a-f]{12}$/);
   });
 
-  test("a directory without artifacts is unavailable, naming the missing manifest", async () => {
+  test("a directory without artifacts is unavailable, naming the missing manifest and marked missing", async () => {
+    const result = await loadTrainedRanker(dir, [skill("dns-debug")]);
+
+    expect(result).toEqual({ unavailable: expect.stringContaining("manifest.json"), missing: true });
+  });
+
+  test("a manifest that is present but not valid JSON is unavailable and not marked missing", async () => {
+    await writeTrainedArtifacts(dir, trainToy());
+    await writeFile(join(dir, "model", "manifest.json"), "{not json");
+
     const result = await loadTrainedRanker(dir, [skill("dns-debug")]);
 
     expect(result).toEqual({ unavailable: expect.stringContaining("manifest.json") });
