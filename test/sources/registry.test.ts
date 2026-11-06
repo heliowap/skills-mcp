@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ConfigError } from "../../src/config";
 import { createGithubAdapter } from "../../src/sources/github";
 import { SourceError } from "../../src/sources/shared";
-import { addSource, defaultAdapters, listSources, removeSource, syncSources } from "../../src/sources/registry";
+import { addSource, defaultAdapters, failureReasons, listSources, removeSource, syncSources } from "../../src/sources/registry";
 import type { SourceSpec } from "../../src/types";
 import { AGENT_DESKTOP_RESPONSES, FAKE_CLI, makeRemote, makeTempDir } from "./helpers";
 
@@ -208,5 +208,16 @@ describe("source registry: sync", () => {
     const outcomes = await syncSources({ adapters });
 
     expect(outcomes[0]!.ok).toBe(false);
+  });
+
+  test("a failed cache fallback is reported as its own reason, beside the online failure", async () => {
+    await addSource({ kind: "github", id: "acme", repo: "acme/skills" });
+    const adapters = { ...defaultAdapters, github: createGithubAdapter({ baseUrl: "file:///nonexistent-remote-root" }) };
+
+    const outcome = (await syncSources({ adapters }))[0]!;
+
+    if (outcome.ok) throw new Error("expected the source to fail");
+    expect(outcome.cacheError).toBeTruthy();
+    expect(failureReasons(outcome)).toEqual([outcome.error, `cached copy unavailable (${outcome.cacheError})`]);
   });
 });

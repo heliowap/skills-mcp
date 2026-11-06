@@ -1,4 +1,6 @@
-// Text helpers for messages and sanitation. Pure functions only.
+// Text helpers for messages and sanitization. Pure functions only.
+
+export { messageOf } from "./types";
 
 /** Default cap for one inline fragment, in UTF-16 units, ellipsis included. */
 export const MAX_INLINE_CHARS = 200;
@@ -43,11 +45,6 @@ export function sanitizeInline(text: string, maxChars: number = MAX_INLINE_CHARS
   const value = stripAndCollapse(text.slice(0, MAX_INPUT_CHARS));
   if (value.length <= limit) return value;
   return `${truncateUnits(value, limit - ELLIPSIS.length)}${ELLIPSIS}`;
-}
-
-/** The message of an Error; any other thrown value is shown in its string form. */
-export function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** The first `max` UTF-16 units of `text`, without ending on a lone surrogate. */

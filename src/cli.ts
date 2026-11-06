@@ -6,7 +6,7 @@
 import { parseArgs } from "node:util";
 import { createApp } from "./app";
 import { ConfigSchema } from "./config";
-import { addSource, listSources, removeSource, type SyncOutcome, syncSources } from "./sources/registry";
+import { addSource, failureReasons, listSources, removeSource, type SyncOutcome, syncSources } from "./sources/registry";
 import { messageOf } from "./text";
 import { shapeFind } from "./mcp/tools";
 import type { SourceSpec } from "./types";
@@ -99,7 +99,7 @@ function parseSpec(text: string): SourceSpec {
 function describeOutcome(outcome: SyncOutcome) {
   return outcome.ok
     ? { sourceId: outcome.sourceId, ok: true, revision: outcome.result.revision, warnings: outcome.result.warnings }
-    : { sourceId: outcome.sourceId, ok: false, error: outcome.error };
+    : { sourceId: outcome.sourceId, ok: false, error: failureReasons(outcome).join("; ") };
 }
 
 function writeJson(value: unknown): void {

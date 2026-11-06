@@ -25,7 +25,14 @@ export const defaultAdapters: AdapterSet = {
 /** Per-source result of a sync. A failing source is reported here and does not stop the others. */
 export type SyncOutcome =
   | { sourceId: string; ok: true; result: MaterializedSource }
-  | { sourceId: string; ok: false; error: string };
+  | { sourceId: string; ok: false; error: string; cacheError?: string };
+
+/** The reasons a failed source gives: the online failure, then the failed cache fallback when there was one. */
+export function failureReasons(outcome: Extract<SyncOutcome, { ok: false }>): string[] {
+  return outcome.cacheError === undefined
+    ? [outcome.error]
+    : [outcome.error, `cached copy unavailable (${outcome.cacheError})`];
+}
 
 export interface SyncOptions {
   /** Sync only these source ids. Unknown ids reject before anything runs. */
@@ -110,11 +117,7 @@ async function syncWithCacheFallback(
       const warning = `source ${sanitizeInline(spec.id)}: online sync failed (${failure}); using the cached copy`;
       return { sourceId: spec.id, ok: true, result: { ...cached, warnings: [...cached.warnings, warning] } };
     } catch (fallbackErr) {
-      return {
-        sourceId: spec.id,
-        ok: false,
-        error: `${failure}; cached copy unavailable (${sanitizeDetail(messageOf(fallbackErr))})`,
-      };
+      return { sourceId: spec.id, ok: false, error: failure, cacheError: sanitizeDetail(messageOf(fallbackErr)) };
     }
   }
 }

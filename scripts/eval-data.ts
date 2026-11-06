@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { parseJsonLines } from "../src/trained/dataset";
 import type { Answer, DecisionModel, Question } from "../src/types";
 import { messageOf } from "../src/text";
 
@@ -43,34 +44,31 @@ const RequestSchema = z
 /** A labelled request. `gold` is the one skill id that covers it, or null when no served skill does. */
 export type EvalRequest = z.infer<typeof RequestSchema>;
 
-/** Reads the JSONL request set. Each line is checked; an error names the line. */
+/** Reads the JSONL request set. Each bad line becomes one issue that names its line; all of them are reported. */
 export function parseRequests(text: string): EvalRequest[] {
-  const requests: EvalRequest[] = [];
   const seen = new Set<string>();
-  text.split("\n").forEach((line, index) => {
-    if (line.trim() === "") return;
-    const where = `eval/requests.jsonl line ${index + 1}`;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch (err) {
-      throw new EvalError(`${where}: not JSON (${messageOf(err)})`);
-    }
-    const parsed = RequestSchema.safeParse(raw);
+  const { rows, issues } = parseJsonLines(text, "eval/requests.jsonl", (json) => {
+    const parsed = RequestSchema.safeParse(json);
     if (!parsed.success) {
       const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
-      throw new EvalError(`${where}: ${details.join("; ")}`);
+      return { ok: false as const, issue: details.join("; ") };
     }
-    if (seen.has(parsed.data.id)) throw new EvalError(`${where}: duplicate request id ${parsed.data.id}`);
+    if (seen.has(parsed.data.id)) return { ok: false as const, issue: `duplicate request id ${parsed.data.id}` };
     seen.add(parsed.data.id);
-    requests.push(parsed.data);
+    return { ok: true as const, value: parsed.data };
   });
-  return requests;
+  if (issues.length > 0) throw new EvalError(issues.join("\n"));
+  return rows.map(({ value }) => value);
 }
 
-/** Eval request texts from `path`. Train-data and train read the fixed set; eval reads its own override. */
-export async function readEvalTexts(requestsPath: string = REQUESTS_PATH): Promise<string[]> {
-  return parseRequests(await readFile(requestsPath, "utf8")).map((request) => request.text);
+/** The request set at `path`, parsed and checked. Eval may point it at another file; the default is the fixed set. */
+export async function readEvalRequests(path: string = REQUESTS_PATH): Promise<EvalRequest[]> {
+  return parseRequests(await readFile(path, "utf8"));
+}
+
+/** The texts of the fixed request set, which the leakage guards compare training rows against. */
+export async function readEvalTexts(): Promise<string[]> {
+  return (await readEvalRequests()).map((request) => request.text);
 }
 
 function sha256(text: string): string {
@@ -111,6 +109,7 @@ const CacheEntrySchema = z.object({
 });
 
 export type CacheEntry = z.infer<typeof CacheEntrySchema>;
+/** One recorded decision call: its question keys, a signature of the full question list, and its answers. */
 export type CachedCall = z.infer<typeof CachedCallSchema>;
 
 function keysOf(questions: readonly Question[]): string {

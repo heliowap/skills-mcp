@@ -12,11 +12,19 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { createApp } from "../src/app";
 import { compareText, type Catalog, type ShadowedSkill } from "../src/types";
 import { messageOf } from "../src/text";
 import { SKILL_FILE } from "../src/skill/scan";
-import { runOpenCodeApi, skillListingArgs, SkillListingSchema } from "./opencode-api";
+import {
+  hasDescription,
+  OpenCodeApiError,
+  runOpenCodeApi,
+  SkillEntrySchema,
+  SkillListingSchema,
+  skillListingArgs,
+} from "./opencode-api";
 
 export const BUILTIN_PREFIX = "/builtin/";
 
@@ -87,6 +95,11 @@ export interface DiffInput {
   unresolved?: Unresolved[];
 }
 
+/** Coverage locates every listed skill on disk, so each one needs an id and a path. */
+const CoverageListingSchema = SkillListingSchema.extend({
+  data: z.array(SkillEntrySchema.extend({ id: z.string().min(1), path: z.string().min(1) })),
+});
+
 /** Reads the id, path and description of each skill from the output of `opencode api get /api/skill`. */
 export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
   let raw: unknown;
@@ -95,7 +108,7 @@ export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
   } catch (err) {
     throw new CoverageError(`opencode api output is not JSON: ${messageOf(err)}`);
   }
-  const parsed = SkillListingSchema.safeParse(raw);
+  const parsed = CoverageListingSchema.safeParse(raw);
   if (!parsed.success) {
     const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
     throw new CoverageError(`opencode api output has no valid skill list: ${details.join("; ")}`);
@@ -105,7 +118,7 @@ export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
 
 /** OpenCode advertises a skill to the agent only when it has a description. */
 function isAdvertised(skill: OpenCodeSkill): boolean {
-  return (skill.description ?? "").trim() !== "";
+  return hasDescription(skill);
 }
 
 /** Compares OpenCode's skills with the served ones, by skill id. Output is sorted by id. */
@@ -241,8 +254,13 @@ function byId(a: { id: string }, b: { id: string }): number {
 }
 
 /** Runs `opencode api get` for the repository at `cwd` through the shared OpenCode runner. */
-export async function readOpenCodeListing(cwd: string): Promise<string> {
-  return runOpenCodeApi(skillListingArgs(cwd));
+export async function readOpenCodeListing(cwd: string, bin?: string): Promise<string> {
+  try {
+    return await runOpenCodeApi(skillListingArgs(cwd), { bin });
+  } catch (err) {
+    if (err instanceof OpenCodeApiError) throw new CoverageError(err.message);
+    throw err;
+  }
 }
 
 async function main(): Promise<number> {

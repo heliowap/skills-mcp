@@ -368,13 +368,14 @@ export interface ParsedLine {
   example: Example;
 }
 
+/** A dataset row and the line it came from, so a later check can name that line. */
 export interface ParsedDatasetRow {
   line: number;
   row: DatasetRow;
 }
 
 /** One JSONL line split, shared by every row parser below: blank lines skipped, line numbers stable. */
-function parseJsonLines<T>(
+export function parseJsonLines<T>(
   text: string,
   where: string,
   parse: (json: unknown) => { ok: true; value: T } | { ok: false; issue: string },
@@ -407,7 +408,7 @@ export function parseDatasetRows(text: string, where: string): { rows: ParsedDat
     const parsed = DatasetRowSchema.safeParse(json);
     return parsed.success
       ? { ok: true as const, value: parsed.data }
-      : { ok: false as const, issue: "not a dataset row" };
+      : { ok: false as const, issue: "has an unexpected shape" };
   });
   return { rows: rows.map(({ line, value }) => ({ line, row: value })), issues };
 }

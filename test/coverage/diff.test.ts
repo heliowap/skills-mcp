@@ -40,6 +40,10 @@ describe("parseOpenCodeSkills", () => {
   test("rejects text that is not JSON", () => {
     expect(() => parseOpenCodeSkills("opencode: command not found")).toThrow(CoverageError);
   });
+
+  test("rejects a listed skill that has no path, since its file cannot be located", () => {
+    expect(() => parseOpenCodeSkills('{"data":[{"id":"tdd","description":"TDD."}]}')).toThrow(CoverageError);
+  });
 });
 
 describe("diffCoverage", () => {

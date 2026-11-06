@@ -14,7 +14,8 @@ describe("shardOf", () => {
   test("never yields a shard above 255 options, even when shardSize asks for more", () => {
     const shards = shardOf(items(600), 1000);
 
-    expect(Math.max(...shards.map((s) => s.length))).toBe(MAX_CHOICE_OPTIONS);
+    expect(MAX_CHOICE_OPTIONS).toBe(255);
+    expect(Math.max(...shards.map((s) => s.length))).toBe(255);
     expect(shards.flat()).toEqual(items(600));
   });
 

@@ -5,6 +5,7 @@ import {
   type DecisionModel,
   type FindResult,
   type LexicalRanker,
+  messageOf,
   type Question,
   type SkillId,
   type SkillRecord,
@@ -12,7 +13,6 @@ import {
   type TrainedRanker,
   type TrainedRanking,
 } from "../types";
-import { messageOf } from "../text";
 import { ClassifierError } from "./errors";
 import { shardOf } from "./shard";
 
@@ -50,10 +50,7 @@ const NAMED_QUESTION =
   "Does the request ask for a specific named tool, format, template, or method to be used, rather than for general help?";
 
 export interface ClassifierOptions {
-  /**
-   * Read on every `find`, so a reloaded catalog is seen without rebuilding the classifier.
-   * The catalog keeps one skill per id; duplicate ids would collide as question option keys.
-   */
+  /** Read on every `find`, so a reloaded catalog is seen without rebuilding the classifier. */
   skills: () => readonly SkillRecord[];
   /** Used when no trained ranker answers: the last resort for the no-model path and the fallback. */
   lexical: LexicalRanker;
@@ -91,6 +88,7 @@ export function createClassifier(opts: ClassifierOptions): Classifier {
     async find(task, findOpts) {
       const limit = findOpts?.limit ?? DEFAULT_LIMIT;
       const skills = opts.skills();
+      assertUniqueIds(skills);
       const { model } = opts;
       if (!model) return answeredWithoutModel(opts, task, skills, limit, { ranker: "trained" });
       try {
@@ -104,6 +102,15 @@ export function createClassifier(opts: ClassifierOptions): Classifier {
       }
     },
   };
+}
+
+/** Option keys are skill ids, so a repeated id would silently drop one option. The catalog never repeats one. */
+function assertUniqueIds(skills: readonly SkillRecord[]): void {
+  const seen = new Set<SkillId>();
+  for (const skill of skills) {
+    if (seen.has(skill.id)) throw new ClassifierError(`duplicate skill id "${skill.id}" in the skill list`);
+    seen.add(skill.id);
+  }
 }
 
 /** The answer of a trained ranker that is injected and did not fail. */
@@ -125,7 +132,7 @@ function askTrained(opts: ClassifierOptions, task: string, skills: readonly Skil
     const suggestion = ranking.needsSkill && ranking.suggestion !== null && skills.some((s) => s.id === ranking.suggestion)
       ? ranking.suggestion
       : null;
-    return { kind: "ranked", needsSkill: ranking.needsSkill, suggestion, candidates: candidatesOf(skills, ranking.candidates, limit) };
+    return { kind: "ranked", needsSkill: ranking.needsSkill, suggestion, candidates: candidatesOf(skills, ranking.candidates).slice(0, limit) };
   } catch (err) {
     return { kind: "failed", reason: `trained ranker failed: ${messageOf(err)}` };
   }
@@ -341,23 +348,17 @@ function byProbability(a: Ranked, b: Ranked): number {
   return b.probability - a.probability || compareText(a.skill.id, b.skill.id);
 }
 
-/** Joins a ranker's output with the records it names; unknown ids drop out, best first, up to `limit`. */
-function candidatesOf(
-  skills: readonly SkillRecord[],
-  ranked: readonly { id: SkillId; score: number }[],
-  limit: number,
-): FindResult["candidates"] {
+/** Joins a ranker's output with the records it names; unknown ids drop out, best first. */
+function candidatesOf(skills: readonly SkillRecord[], ranked: readonly { id: SkillId; score: number }[]): FindResult["candidates"] {
   const byId = new Map(skills.map((s) => [s.id, s]));
-  return ranked
-    .flatMap(({ id, score }) => {
-      const skill = byId.get(id);
-      return skill ? [{ id, description: skill.description, score }] : [];
-    })
-    .slice(0, limit);
+  return ranked.flatMap(({ id, score }) => {
+    const skill = byId.get(id);
+    return skill ? [{ id, description: skill.description, score }] : [];
+  });
 }
 
 function lexicalCandidates(lexical: LexicalRanker, task: string, skills: readonly SkillRecord[], limit: number): FindResult["candidates"] {
-  return candidatesOf(skills, lexical.rank(task, skills, limit), limit);
+  return candidatesOf(skills, lexical.rank(task, skills, limit));
 }
 
 /** Runs `run` under a deadline. On timeout or parent abort, the signal passed to `run` is aborted too. */
@@ -386,6 +387,4 @@ async function withDeadline<T>(
     parent?.removeEventListener("abort", onParentAbort);
   }
 }
-
-
 

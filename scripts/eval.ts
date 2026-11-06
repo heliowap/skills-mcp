@@ -38,8 +38,7 @@ import {
   loadEntry,
   mapLimit,
   newEntry,
-  parseRequests,
-  REQUESTS_PATH,
+  readEvalRequests,
   saveEntry,
 } from "./eval-data";
 
@@ -276,7 +275,7 @@ export interface ModelRun {
  * request: the first at the real thresholds gives the reported result and latency; the second at zero
  * thresholds records the shortlist question the gate may hide, so a sweep never needs the network.
  * No trained ranker is injected here on purpose: these rows measure the model path alone, so a failed
- * model falls back to plain BM25 (`bm25-fallback`) while the server would try the trained ranker
+ * model falls back to the lexical ranker (`bm25-fallback`) while the server would try the trained ranker
  * first; the trained chain is measured on its own by `--ranker trained`.
  */
 export async function runModelRanker(run: ModelRun): Promise<Outcome[]> {
@@ -527,7 +526,7 @@ export async function main(argv: readonly string[], options: MainOptions = {}): 
   const config = await loadConfig();
   const skills = app.catalog().all();
   const hash = catalogHash(skills.map((skill) => skill.id));
-  const requests = parseRequests(await readFile(options.requestsPath ?? REQUESTS_PATH, "utf8"));
+  const requests = await readEvalRequests(options.requestsPath);
   const covered = requests.filter((r) => r.gold !== null).length;
   const write = options.out ?? ((text: string) => process.stdout.write(`${text}\n`));
   write(`catalog: ${skills.length} skills (${hash.slice(0, 12)}); requests: ${requests.length} (${covered} covered, ${requests.length - covered} uncovered)`);

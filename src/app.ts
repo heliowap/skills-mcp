@@ -10,6 +10,7 @@ import { createClassifier } from "./rank/classifier";
 import {
   type AdapterSet,
   addSource,
+  failureReasons,
   listSources,
   removeSource,
   type SyncOutcome,
@@ -98,7 +99,7 @@ export async function createApp(options: AppOptions = {}): Promise<App> {
     const warnings: string[] = [];
     for (const outcome of outcomes) {
       if (outcome.ok) materialized.push(outcome.result);
-      else warnings.push(`source ${outcome.sourceId}: ${outcome.error}`);
+      else for (const reason of failureReasons(outcome)) warnings.push(`source ${outcome.sourceId}: ${reason}`);
     }
     const trustedSources = new Set(config.sources.filter((s) => s.kind === "local").map((s) => s.id));
     const built = await buildCatalog(materialized, { trustedSources });

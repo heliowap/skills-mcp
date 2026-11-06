@@ -1,4 +1,5 @@
 // Shared contracts. Frozen in P0: packages P1–P4 build against these shapes.
+// Also the pure helpers src/rank needs (compareText, messageOf), since rank may import only this file.
 
 /** Leaf directory name; ^[a-z0-9]+(-[a-z0-9]+)*$, 1–64 chars (agentskills.io spec). */
 export type SkillId = string;
@@ -6,6 +7,11 @@ export type SkillId = string;
 /** -1, 0 or 1: the order of two strings. The tie-break every ranking, chunk and report sort shares. */
 export function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** The message of an Error; any other thrown value is shown in its string form. */
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** One skill as the catalog knows it. `description` is sanitized and at most 1024 chars. */
