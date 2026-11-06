@@ -1,7 +1,9 @@
-// Evaluation of the skill classifier on labelled requests: `bun run eval -- --ranker bm25|<model id> [--sweep]`.
+// Evaluation of the skill classifier on labelled requests:
+// `bun run eval -- --ranker bm25|bm25-expanded|trained|<model id> [--sweep]`.
 // Requests live in eval/requests.jsonl. Model answers are cached per request under eval/cache, so a
 // threshold sweep replays them and never calls the API. The real classifier scores every run, both live
-// and replayed, so there is one scoring path.
+// and replayed, so there is one scoring path. The trained ranker and expansions are read from trainedDir();
+// before either is scored, the leakage guard checks that no kept training row shares text with an eval request.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -11,21 +13,32 @@ import { createApp } from "../src/app";
 import { loadConfig, ThresholdsSchema } from "../src/config";
 import { createDecisionModel } from "../src/decision/ai-sdk";
 import { resolveThresholds } from "../src/decision/providers";
+import { trainedDir } from "../src/paths";
 import { createBm25Ranker } from "../src/rank/bm25";
 import { createClassifier } from "../src/rank/classifier";
 import { messageOf } from "../src/text";
+import { loadExpansions, loadTrainedRanker } from "../src/trained/artifact";
+import { DatasetRowSchema, leaksEval } from "../src/trained/dataset";
 import type {
   Answer,
   Classifier,
   DecisionModel,
   FindResult,
+  LexicalRanker,
   Question,
   SkillRecord,
   Thresholds,
+  TrainedRanker,
 } from "../src/types";
 
 export const REQUESTS_PATH = join(import.meta.dir, "..", "eval", "requests.jsonl");
 export const CACHE_DIR = join(import.meta.dir, "..", "eval", "cache");
+/** The training rows, under trainedDir(). The leakage guard reads them before any trained or expanded run. */
+const DATASET_FILE = "dataset.jsonl";
+/** Top-K depths at which the trained ranker's gold recall is reported, for a future prefilter decision. */
+const RECALL_KS = [20, 40, 60] as const;
+/** Rankers that never call a model: no threshold, so no sweep. */
+const LEXICAL_RANKERS = ["bm25", "bm25-expanded", "trained"] as const;
 /** Grid step for the threshold sweep. */
 export const SWEEP_STEP = 0.05;
 /** The cookbook defaults, as config.ts documents them. Read from the schema so they cannot drift. */
@@ -323,16 +336,24 @@ export async function saveEntry(dir: string, entry: CacheEntry): Promise<void> {
   await writeFile(path, `${JSON.stringify(entry, null, 2)}\n`);
 }
 
+/** The non-model rankers a classifier can use. Plain BM25 when none is given. */
+interface Rankers {
+  lexical: LexicalRanker;
+  trained?: TrainedRanker;
+}
+
 function classifierFor(
   skills: readonly SkillRecord[],
   model: DecisionModel | undefined,
   thresholds: Thresholds,
   shardSize: number,
   timeoutMs: number,
+  rankers: Rankers = { lexical: createBm25Ranker() },
 ): Classifier {
   return createClassifier({
     skills: () => skills,
-    lexical: createBm25Ranker(),
+    lexical: rankers.lexical,
+    trained: () => rankers.trained,
     model,
     thresholds,
     shardSize,
@@ -378,14 +399,60 @@ export async function runLexicalRanker(
   requests: readonly EvalRequest[],
   shardSize: number,
   timeoutMs: number,
+  lexical: LexicalRanker = createBm25Ranker(),
 ): Promise<Outcome[]> {
-  const classifier = classifierFor(skills, undefined, COOKBOOK_DEFAULTS, shardSize, timeoutMs);
+  const classifier = classifierFor(skills, undefined, COOKBOOK_DEFAULTS, shardSize, timeoutMs, { lexical });
   const outcomes: Outcome[] = [];
   for (const request of requests) {
     const timed = await findTimed(classifier, request);
     outcomes.push(toOutcome(request, timed.result, timed.elapsedMs));
   }
   return outcomes;
+}
+
+/**
+ * The trained ranker with no model configured, as the server answers it. A request it cannot answer
+ * falls back to lexical ranking; that is an error here, so the row never mixes two rankers.
+ */
+export async function runTrainedRanker(
+  skills: readonly SkillRecord[],
+  requests: readonly EvalRequest[],
+  shardSize: number,
+  timeoutMs: number,
+  rankers: Rankers,
+): Promise<Outcome[]> {
+  const classifier = classifierFor(skills, undefined, COOKBOOK_DEFAULTS, shardSize, timeoutMs, rankers);
+  const outcomes: Outcome[] = [];
+  for (const request of requests) {
+    const timed = await findTimed(classifier, request);
+    if (timed.result.ranker !== "trained") {
+      throw new EvalError(
+        `the trained ranker did not answer request ${request.id} (${timed.result.reason ?? "no reason given"})`,
+      );
+    }
+    outcomes.push(toOutcome(request, timed.result, timed.elapsedMs));
+  }
+  return outcomes;
+}
+
+/**
+ * Gold recall of the trained ranker: for each K, the share of covered requests whose gold skill is among
+ * the ranker's first K candidates. Uncovered requests have no gold and are not counted.
+ */
+function trainedRecall(
+  ranker: TrainedRanker,
+  skills: readonly SkillRecord[],
+  requests: readonly EvalRequest[],
+): { k: number; hits: number; covered: number }[] {
+  const deepest = Math.max(...RECALL_KS);
+  const rankings = requests.flatMap((request) =>
+    request.gold === null ? [] : [{ gold: request.gold, ranked: ranker.rank(request.text, skills, deepest).candidates.map((c) => c.id) }],
+  );
+  return RECALL_KS.map((k) => ({
+    k,
+    hits: rankings.filter(({ gold, ranked }) => ranked.slice(0, k).includes(gold)).length,
+    covered: rankings.length,
+  }));
 }
 
 export interface ModelRun {
@@ -493,7 +560,7 @@ export interface Args {
   sweep: boolean;
 }
 
-const USAGE = "usage: bun run eval -- --ranker bm25|<model id> [--sweep]";
+const USAGE = "usage: bun run eval -- --ranker bm25|bm25-expanded|trained|<model id> [--sweep]";
 
 export function parseArgs(argv: readonly string[]): Args {
   let ranker: string | undefined;
@@ -506,8 +573,14 @@ export function parseArgs(argv: readonly string[]): Args {
     else throw new EvalError(`unknown argument ${arg}. ${USAGE}`);
   }
   if (!ranker) throw new EvalError(`missing --ranker. ${USAGE}`);
-  if (sweep && ranker === "bm25") throw new EvalError("--sweep needs a model ranker: bm25 has no threshold to sweep");
+  if (sweep && isLexical(ranker)) {
+    throw new EvalError(`--sweep needs a model ranker: ${ranker} has no threshold to sweep`);
+  }
   return { ranker, sweep };
+}
+
+function isLexical(ranker: string): boolean {
+  return (LEXICAL_RANKERS as readonly string[]).includes(ranker);
 }
 
 const percentOf = (count: number, total: number): string =>
@@ -548,9 +621,31 @@ export function formatLexicalTable(ranker: string, s: Summary): string {
       ms(s.p95Ms),
     ].join(" | ")} |`,
     "",
-    "bm25 cannot abstain: it always returns candidates and never suggests, so no wrong or needless rate is defined.",
+    `${ranker} cannot abstain: it always returns candidates and never suggests, so no wrong or needless rate is defined.`,
     "The top-1 wrong and uncovered-with-a-candidate columns show what a top-1 suggestion would cost without a gate.",
   ].join("\n");
+}
+
+/** The trained ranker's row: its gate decides abstention, so wrong and needless rates are defined, plus gold recall. */
+export function formatTrainedTable(ranker: string, s: Summary, recall: readonly { k: number; hits: number; covered: number }[]): string {
+  const lines = [
+    "| ranker | top-1 hit (covered) | top-3 hit (covered) | wrong suggestions (covered) | needless suggestions (uncovered) | correct abstentions (uncovered) | fallbacks | p50 ms | p95 ms |",
+    "|---|---|---|---|---|---|---|---|---|",
+    `| ${[
+      ranker,
+      percentOf(s.top1Hits, s.covered),
+      percentOf(s.top3Hits, s.covered),
+      percentOf(s.wrong, s.covered),
+      percentOf(s.needless, s.uncovered),
+      percentOf(s.uncovered - s.needless, s.uncovered),
+      `${s.fallbacks}`,
+      ms(s.p50Ms),
+      ms(s.p95Ms),
+    ].join(" | ")} |`,
+    "",
+    ...recall.map((r) => `gold in ${ranker} top-${r.k}: ${percentOf(r.hits, r.covered)}`),
+  ];
+  return lines.join("\n");
 }
 
 export function formatSweep(modelId: string, points: readonly SweepPoint[]): string {
@@ -574,20 +669,97 @@ export function formatSweep(modelId: string, points: readonly SweepPoint[]): str
   ].join("\n");
 }
 
-async function main(argv: readonly string[]): Promise<number> {
+/**
+ * Fails when a kept row of the training dataset shares text with an eval request. A dropped row never
+ * reaches training, so it may echo an eval request. Rows name their skill and source, never their text.
+ */
+export async function assertNoEvalLeak(path: string, requests: readonly EvalRequest[]): Promise<void> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    throw new EvalError(`leakage guard cannot read ${path} (${messageOf(err)}); run bun run train-data first`);
+  }
+  const evalTexts = requests.map((request) => request.text);
+  const leaks: string[] = [];
+  text.split("\n").forEach((raw, index) => {
+    if (raw.trim() === "") return;
+    const where = `${path} line ${index + 1}`;
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      throw new EvalError(`${where}: not JSON`);
+    }
+    const parsed = DatasetRowSchema.safeParse(json);
+    if (!parsed.success) throw new EvalError(`${where}: not a dataset row`);
+    const row = parsed.data;
+    if (row.keep && leaksEval(row.text, evalTexts)) {
+      leaks.push(`${where} (${row.kind}, ${row.skillId ?? "no skill"}, ${row.source})`);
+    }
+  });
+  if (leaks.length > 0) {
+    throw new EvalError(`leakage guard: ${leaks.length} kept training row(s) share text with an eval request: ${leaks.join("; ")}`);
+  }
+}
+
+/** The trained ranker from `dir`, or a failure that names the reason and the command that fixes it. */
+async function loadTrainedOrFail(dir: string, skills: readonly SkillRecord[]): Promise<TrainedRanker> {
+  const loaded = await loadTrainedRanker(dir, skills);
+  if ("unavailable" in loaded) {
+    throw new EvalError(`no usable trained ranker in ${dir}: ${loaded.unavailable}. Run \`bun run train\` first`);
+  }
+  return loaded;
+}
+
+/** BM25 with the expansions in `dir`, or undefined when expansions.json is missing or invalid. */
+async function expandedBm25(dir: string): Promise<LexicalRanker | undefined> {
+  const expansions = await loadExpansions(dir);
+  if (!expansions) return undefined;
+  return createBm25Ranker({ expansions: (skill) => expansions.examplesFor(skill), expansionWeight: expansions.weight });
+}
+
+export interface MainOptions {
+  /** The request set. Defaults to eval/requests.jsonl. Tests point it at a fixture. */
+  requestsPath?: string;
+  /** Receives each printed line. Defaults to stdout. */
+  out?: (text: string) => void;
+}
+
+export async function main(argv: readonly string[], options: MainOptions = {}): Promise<number> {
   const args = parseArgs(argv);
   const app = await createApp();
   const config = await loadConfig();
   const skills = app.catalog().all();
   const hash = catalogHash(skills.map((skill) => skill.id));
-  const requests = parseRequests(await readFile(REQUESTS_PATH, "utf8"));
+  const requests = parseRequests(await readFile(options.requestsPath ?? REQUESTS_PATH, "utf8"));
   const covered = requests.filter((r) => r.gold !== null).length;
-  const write = (text: string) => process.stdout.write(`${text}\n`);
+  const write = options.out ?? ((text: string) => process.stdout.write(`${text}\n`));
   write(`catalog: ${skills.length} skills (${hash.slice(0, 12)}); requests: ${requests.length} (${covered} covered, ${requests.length - covered} uncovered)`);
 
   if (args.ranker === "bm25") {
     const outcomes = await runLexicalRanker(skills, requests, config.shardSize, config.timeoutMs);
     write(formatLexicalTable("bm25", summarize(outcomes)));
+    return 0;
+  }
+
+  if (args.ranker === "bm25-expanded" || args.ranker === "trained") {
+    const dir = trainedDir();
+    const datasetPath = join(dir, DATASET_FILE);
+    if (args.ranker === "bm25-expanded") {
+      const lexical = await expandedBm25(dir);
+      if (!lexical) throw new EvalError(`expansions.json is missing or invalid in ${dir}. Run \`bun run train\` first`);
+      await assertNoEvalLeak(datasetPath, requests);
+      const outcomes = await runLexicalRanker(skills, requests, config.shardSize, config.timeoutMs, lexical);
+      write(formatLexicalTable("bm25-expanded", summarize(outcomes)));
+      return 0;
+    }
+
+    const trained = await loadTrainedOrFail(dir, skills);
+    await assertNoEvalLeak(datasetPath, requests);
+    const lexical = (await expandedBm25(dir)) ?? createBm25Ranker();
+    const outcomes = await runTrainedRanker(skills, requests, config.shardSize, config.timeoutMs, { lexical, trained });
+    write(formatTrainedTable("trained", summarize(outcomes), trainedRecall(trained, skills, requests)));
     return 0;
   }
 
