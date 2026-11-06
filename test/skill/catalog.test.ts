@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -569,6 +570,38 @@ describe("buildCatalog: lenient frontmatter", () => {
       "Long-form argumentative writing: thesis, structure and sourced claims. Use when drafting or reviewing reports.",
     );
     expect(warned(warnings, "report-writer", "lenient")).toBe(true);
+  });
+});
+
+describe("contentHash", () => {
+  test("is the sha256 hex of the SKILL.md text", async () => {
+    const text = skillMd("hashed", "Hash me.");
+    const base = await tree({ "hashed/SKILL.md": text });
+    const { catalog } = await buildCatalog([source("s", [base])]);
+
+    expect(catalog.get("hashed")?.contentHash).toBe(createHash("sha256").update(text).digest("hex"));
+  });
+
+  test("changes when one byte of SKILL.md changes and is stable when nothing changes", async () => {
+    const original = await tree({ "same/SKILL.md": skillMd("same", "Stable text.") });
+    const again = await tree({ "same/SKILL.md": skillMd("same", "Stable text.") });
+    const edited = await tree({ "same/SKILL.md": skillMd("same", "Stable text!") });
+
+    const hash = async (base: string) => (await buildCatalog([source("s", [base])])).catalog.get("same")?.contentHash;
+    const before = await hash(original);
+
+    expect(before).toMatch(/^[0-9a-f]{64}$/);
+    expect(await hash(again)).toBe(before);
+    expect(await hash(edited)).not.toBe(before);
+  });
+
+  test("changes when only a leading byte-order mark is added", async () => {
+    const plain = await tree({ "bom/SKILL.md": skillMd("bom", "Same text.") });
+    const marked = await tree({ "bom/SKILL.md": `\uFEFF${skillMd("bom", "Same text.")}` });
+
+    const hash = async (base: string) => (await buildCatalog([source("s", [base])])).catalog.get("bom")?.contentHash;
+
+    expect(await hash(marked)).not.toBe(await hash(plain));
   });
 });
 

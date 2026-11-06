@@ -10,6 +10,7 @@ export function skill(id: string, fields: Partial<Omit<SkillRecord, "id">> = {})
     relPath: id,
     revision: null,
     excerpt: "",
+    contentHash: `hash-${id}`,
     ...fields,
   };
 }

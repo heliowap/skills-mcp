@@ -6,9 +6,12 @@ Rules for writing and reviewing code in this repository. Domain terms follow [GL
 
 - `src/types.ts` is the single source of shared contracts. Change a contract there first, then its implementations; never redeclare a contract shape elsewhere.
 - `src/decision/ai-sdk.ts` is the only file that imports `ai` or `@ai-sdk/*`. Everything else talks to a decision model through the `DecisionModel` port. Tests may import `ai/test`.
-- `src/rank` depends only on `src/types.ts`; its decision model and lexical ranker arrive as injected arguments.
+- `src/rank` depends only on `src/types.ts`; its decision model, lexical ranker and trained ranker arrive as injected arguments.
+- Only `src/trained` and `scripts/` read or write training artifacts; `src/rank` receives the trained ranker injected.
 - `src/app.ts` is the composition root: config, sources, catalog and classifier are wired there and nowhere else.
 - Limits and thresholds live in config or `src/decision/providers.json`. Code reads them from options; fixed protocol limits (255 choice options, 1024-char descriptions) are named, exported constants.
+- Tuned values may also live in trained artifacts produced by `bun run train`; a retrained model carries its own calibration.
+- Training data and trained artifacts contain the user's private skills and live only under `trainedDir()`, never in the repo.
 
 ## Untrusted skills
 

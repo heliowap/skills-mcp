@@ -36,6 +36,10 @@ _Avoid_: Duplicate, mirror
 The opening of a skill's body, used to tell similar skills apart.
 _Avoid_: Preview, snippet
 
+**Example task**:
+A task description written to show when a skill applies, used to teach the trained ranker and to build expansions.
+_Avoid_: Sample, test case, eval request
+
 ## Sources and catalog
 
 **Source**:
@@ -92,6 +96,18 @@ _Avoid_: Router, selector
 A ranker that scores candidates by shared words, with no model; also the fallback.
 _Avoid_: Search, BM25 (as a concept name)
 
+**Trained ranker**:
+A ranker that scores candidates with weights learned offline from example tasks and stored as an artifact; unlike the lexical ranker, it can decide that no skill applies.
+_Avoid_: ML ranker, model, classifier
+
+**Teacher**:
+The decision model whose answers decide which example tasks are kept for training.
+_Avoid_: Labeler, oracle, gold model
+
+**Expansion**:
+Extra text added to a skill's lexical index from its example tasks, so a paraphrase can match a skill whose own text shares no words with it.
+_Avoid_: Synonym, alias, tag
+
 **Decision model**:
 A model that answers typed questions with probabilities instead of generating text.
 _Avoid_: LLM, classifier model, Jev (as a generic name)
@@ -121,7 +137,7 @@ The probability a decision model's answer must reach before the classifier acts 
 _Avoid_: Cutoff, confidence level
 
 **Fallback**:
-Answering a task with the lexical ranker when the decision model is unavailable or fails.
+Answering a task with the trained or lexical ranker when the decision model is unavailable or fails.
 _Avoid_: Degraded mode, offline mode
 
 ## Harness
