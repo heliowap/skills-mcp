@@ -135,11 +135,11 @@ TDD applies to every Local behavior and Sensitive package; Sensitive packages al
 
 ### P6 — Import the user's skills + coverage
 - **Purpose:** register every OpenCode-known skill as a server source, without touching OpenCode yet.
-- **Owns:** `scripts/coverage.ts`, `docs/migration-inventory.md`.
+- **Owns:** `scripts/coverage.ts`.
 - **Class:** Local behavior. **Depends:** P5.
-- **Steps:** `opencode api get "/api/skill?location[directory]=$PWD"` → 175 ids and paths; map to sources: local `~/.agents/skills`, `~/.config/opencode/skills`, `~/.claude/skills/synced/...`; github `vercel/vercel-plugin` `skills/`; github `upstash/context7` `skills/`; cli `agent-desktop`; testsprite skills from their on-disk location (U8). Trial `chrome-devtools`: check whether its CLI exists and ships skills (U8); record result and recommendation in the inventory doc (disabling it waits for user approval). Add sources via `bun src/cli.ts sources add`; `coverage.ts` diffs OpenCode ids against catalog ids and lists missing and shadowed.
+- **Steps:** `opencode api get "/api/skill?location[directory]=$PWD"` → ids and paths; map each to a local, github or cli source. Trial `chrome-devtools`: check whether its CLI exists and ships skills (U8); record result and recommendation (disabling it waits for user approval). Add sources via `bun src/cli.ts sources add`; `coverage.ts` diffs OpenCode ids against catalog ids and lists missing and shadowed. The inventory of sources, revisions and shadowed ids is kept outside the repository.
 - **Verify:** `bun run coverage` → `missing: 0` (builtins reported separately under D1), exit 0.
-- **Done:** inventory doc lists every source, sha and shadowed id.
+- **Done:** every OpenCode-known skill is registered as a source; the external inventory lists every source, sha and shadowed id.
 
 ### P7 — Evaluation and threshold calibration
 - **Purpose:** measure wrong and needless suggestions per ranker before cutover.
