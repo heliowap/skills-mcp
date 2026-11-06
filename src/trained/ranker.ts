@@ -1,11 +1,9 @@
 // The trained ranker: a softmax over the catalog's skills plus the abstain class, with masking and a stored threshold.
 
 import type { SkillId, SkillRecord, TrainedRanker, TrainedRanking } from "../types";
+import { NONE_CLASS } from "./dataset";
 import { vectorize, type Vectorizer } from "./features";
 import { predictProba, type LinearModel } from "./linear";
-
-/** The abstain class. dataset.ts exports the same value; keep the two equal. */
-export const NONE_CLASS = "__none__";
 
 /** A validated artifact ready to rank. `skillHashes` holds the contentHash each skill was trained on. */
 export interface LoadedModel {

@@ -5,8 +5,9 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { SkillRecord, TrainedRanker } from "../types";
+import { NONE_CLASS } from "./dataset";
 import type { FeatureSpec } from "./features";
-import { createTrainedRanker, NONE_CLASS } from "./ranker";
+import { createTrainedRanker } from "./ranker";
 
 /** Writing an artifact whose parts disagree, or that the schema rejects. */
 export class ArtifactError extends Error {
@@ -99,7 +100,11 @@ export interface TrainedArtifact {
   expansions: Expansions;
 }
 
-type Unavailable = { unavailable: string };
+/**
+ * Why a trained artifact could not be loaded. `missing` is set only when `model/manifest.json` does not
+ * exist, which means nothing was ever trained; every other reason is a problem worth reporting.
+ */
+type Unavailable = { unavailable: string; missing?: true };
 
 function formatIssues(error: z.ZodError): string {
   return error.issues
@@ -236,7 +241,8 @@ async function readOrReason(path: string, label: string): Promise<Uint8Array | U
     return new Uint8Array(await readFile(path));
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    return { unavailable: code === "ENOENT" ? `${label} is missing` : `${label} cannot be read (${code ?? "unknown error"})` };
+    if (code === "ENOENT") return { unavailable: `${label} is missing`, missing: true };
+    return { unavailable: `${label} cannot be read (${code ?? "unknown error"})` };
   }
 }
 
@@ -269,8 +275,9 @@ export async function loadTrainedRanker(
   if (!parsed.success) return { unavailable: `model/manifest.json: ${formatIssues(parsed.error)}` };
   const manifest = parsed.data;
 
+  // Only a missing manifest means nothing was trained, so a missing weights file is reported as a problem.
   const weightBytes = await readOrReason(join(dir, WEIGHTS_PATH), "model/weights.f32");
-  if (isUnavailable(weightBytes)) return weightBytes;
+  if (isUnavailable(weightBytes)) return { unavailable: weightBytes.unavailable };
   const expected = expectedWeightBytes(manifest);
   if (weightBytes.byteLength !== expected) {
     return {

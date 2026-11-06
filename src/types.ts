@@ -67,12 +67,15 @@ export interface TrainedRanker {
 }
 /** What a trained ranker says about one task. */
 export interface TrainedRanking { needsSkill: boolean; suggestion: SkillId | null; candidates: { id: SkillId; score: number }[] }
+/** Every ranker name `find` can report. A new ranker is one edit here. */
+export const RANKERS = ["model", "bm25", "bm25-fallback", "trained", "trained-fallback"] as const;
+export type Ranker = (typeof RANKERS)[number];
 /** Outcome of `find`. `needsSkill: null` means unknown (lexical ranking only). */
 export interface FindResult {
   needsSkill: boolean | null;  // null = unknown (BM25 only)
   suggestion: SkillId | null;  // at most one
   candidates: { id: SkillId; description: string; score: number }[];
-  ranker: "model" | "bm25" | "bm25-fallback" | "trained" | "trained-fallback"; model?: string; reason?: string;
+  ranker: Ranker; model?: string; reason?: string;
 }
 /** Finds the best skill for a task description. */
 export interface Classifier { find(task: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<FindResult> }
