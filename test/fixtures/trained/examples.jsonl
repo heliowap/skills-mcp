@@ -1,0 +1,6 @@
+{"skillId":"pdf","text":"Two scanned statements need merging into one file, and the second page came out sideways.","kind":"positive","source":"F01/situational"}
+{"skillId":"setup-env","text":"My env file is missing the database url and the app will not boot, sort it out.","kind":"positive","source":"F01/symptom"}
+{"skillId":"setup-db","text":"Migrations fail on a fresh clone because the local database does not exist yet.","kind":"positive","source":"F01/symptom"}
+{"skillId":"setup-ci","text":"We need a CI workflow for this repository, the pipeline config is still missing.","kind":"positive","source":"F01/terse"}
+{"skillId":null,"text":"Explain why monorepos are popular with large engineering teams.","kind":"negative","source":"F01/conceptual"}
+{"skillId":null,"text":"What is fifteen percent of eighty?","kind":"negative","source":"F01/everyday"}
