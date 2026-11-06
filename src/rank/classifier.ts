@@ -5,8 +5,11 @@ import type {
   FindResult,
   LexicalRanker,
   Question,
+  SkillId,
   SkillRecord,
   Thresholds,
+  TrainedRanker,
+  TrainedRanking,
 } from "../types";
 import { messageOf } from "../text";
 import { ClassifierError } from "./errors";
@@ -48,10 +51,15 @@ const NAMED_QUESTION =
 export interface ClassifierOptions {
   /** Read on every `find`, so a reloaded catalog is seen without rebuilding the classifier. */
   skills: () => readonly SkillRecord[];
-  /** First pass for the no-model path and the fallback. */
+  /** Used when no trained ranker answers: the last resort for the no-model path and the fallback. */
   lexical: LexicalRanker;
-  /** Absent when no model is configured; `find` then uses lexical ranking only. */
+  /** Absent when no model is configured. */
   model?: DecisionModel;
+  /**
+   * Read on every `find`, like `skills`. When it returns a ranker, that ranker answers before the lexical one,
+   * both without a model and as the fallback when the model fails.
+   */
+  trained?: () => TrainedRanker | undefined;
   thresholds: Thresholds;
   shardSize: number;
   /** Deadline for each decision round (call 1, then call 2). */
@@ -72,8 +80,9 @@ type ChoiceAnswer = Extract<Answer, { kind: "choice" }>;
  * The TypeSafe cookbook's two-call flow. Call 1 ranks every shard in parallel, and only shard 0
  * carries the gate questions. The gate passes if the action mean or the named score reaches its
  * threshold. Call 2 re-checks the top three with one fits question each, and suggests the winner
- * only if the best fits score reaches its threshold. Any model error or timeout falls back to lexical
- * ranking, with `ranker: "bm25-fallback"`.
+ * only if the best fits score reaches its threshold. Any model error or timeout falls back to the
+ * trained ranker (`ranker: "trained-fallback"`) or, without one, to lexical ranking (`"bm25-fallback"`).
+ * With no model, the trained ranker answers (`"trained"`) and lexical ranking is the last resort.
  */
 export function createClassifier(opts: ClassifierOptions): Classifier {
   return {
@@ -81,22 +90,84 @@ export function createClassifier(opts: ClassifierOptions): Classifier {
       const limit = findOpts?.limit ?? DEFAULT_LIMIT;
       const skills = uniqueById(opts.skills());
       const { model } = opts;
-      if (!model) {
-        return { needsSkill: null, suggestion: null, candidates: lexicalCandidates(opts.lexical, task, skills, limit), ranker: "bm25" };
-      }
+      if (!model) return withoutModel(opts, task, skills, limit);
       try {
         return await runModelFlow(model, task, skills, limit, opts, findOpts?.signal);
       } catch (err) {
-        return {
-          needsSkill: null,
-          suggestion: null,
-          candidates: lexicalCandidates(opts.lexical, task, skills, limit),
-          ranker: "bm25-fallback",
-          model: model.id,
-          reason: messageOf(err),
-        };
+        return modelFailed(opts, model.id, messageOf(err), task, skills, limit);
       }
     },
+  };
+}
+
+/** The answer of a trained ranker that is injected and did not fail. */
+type TrainedAttempt =
+  | { kind: "absent" }
+  | { kind: "failed"; reason: string }
+  | { kind: "ranked"; needsSkill: boolean; suggestion: SkillId | null; candidates: FindResult["candidates"] };
+
+/**
+ * Asks the injected trained ranker. It never throws: a failure becomes a reason, so `find` can fall
+ * through to lexical ranking. The answer is checked against the current catalog: a suggestion that is
+ * not in it is dropped, and so are candidates that are not in it. A suggestion is kept only with needsSkill.
+ */
+function askTrained(opts: ClassifierOptions, task: string, skills: SkillRecord[], limit: number): TrainedAttempt {
+  try {
+    const ranker = opts.trained?.();
+    if (!ranker) return { kind: "absent" };
+    const ranking: TrainedRanking = ranker.rank(task, skills, limit);
+    const byId = new Map(skills.map((s) => [s.id, s]));
+    const suggestion = ranking.needsSkill && ranking.suggestion !== null && byId.has(ranking.suggestion) ? ranking.suggestion : null;
+    const candidates = ranking.candidates
+      .flatMap(({ id, score }) => {
+        const skill = byId.get(id);
+        return skill ? [{ id, description: skill.description, score }] : [];
+      })
+      .slice(0, limit);
+    return { kind: "ranked", needsSkill: ranking.needsSkill, suggestion, candidates };
+  } catch (err) {
+    return { kind: "failed", reason: `trained ranker failed: ${messageOf(err)}` };
+  }
+}
+
+function withoutModel(opts: ClassifierOptions, task: string, skills: SkillRecord[], limit: number): FindResult {
+  const attempt = askTrained(opts, task, skills, limit);
+  if (attempt.kind === "ranked") {
+    return { needsSkill: attempt.needsSkill, suggestion: attempt.suggestion, candidates: attempt.candidates, ranker: "trained" };
+  }
+  const lexical = lexicalCandidates(opts.lexical, task, skills, limit);
+  return attempt.kind === "failed"
+    ? { needsSkill: null, suggestion: null, candidates: lexical, ranker: "bm25", reason: attempt.reason }
+    : { needsSkill: null, suggestion: null, candidates: lexical, ranker: "bm25" };
+}
+
+function modelFailed(
+  opts: ClassifierOptions,
+  modelId: string,
+  reason: string,
+  task: string,
+  skills: SkillRecord[],
+  limit: number,
+): FindResult {
+  const attempt = askTrained(opts, task, skills, limit);
+  if (attempt.kind === "ranked") {
+    return {
+      needsSkill: attempt.needsSkill,
+      suggestion: attempt.suggestion,
+      candidates: attempt.candidates,
+      ranker: "trained-fallback",
+      model: modelId,
+      reason,
+    };
+  }
+  const fullReason = attempt.kind === "failed" ? `${reason}; ${attempt.reason}` : reason;
+  return {
+    needsSkill: null,
+    suggestion: null,
+    candidates: lexicalCandidates(opts.lexical, task, skills, limit),
+    ranker: "bm25-fallback",
+    model: modelId,
+    reason: fullReason,
   };
 }
 
