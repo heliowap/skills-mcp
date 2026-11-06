@@ -5,7 +5,7 @@ import type { Dirent, Stats } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { sanitizeInline } from "../text";
-import type { ReadError } from "../types";
+import { compareText, type ReadError } from "../types";
 import { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES } from "./validate";
 
 /** The file that makes a directory a skill; its name is fixed by the skill format. */
@@ -151,7 +151,7 @@ async function walk(state: WalkState, scope: string, dirReal: string, dirRel: st
     state.warnings.push(`${sanitizeInline(dirRel || ".")}: directory unreadable; skipped`);
     return;
   }
-  children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  children.sort((a, b) => compareText(a.name, b.name));
 
   for (const child of children) {
     if (state.truncated) return;

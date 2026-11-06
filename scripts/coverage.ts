@@ -12,15 +12,13 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Subprocess } from "bun";
-import { z } from "zod";
 import { createApp } from "../src/app";
-import type { Catalog, ShadowedSkill } from "../src/types";
+import { compareText, type Catalog, type ShadowedSkill } from "../src/types";
 import { messageOf } from "../src/text";
+import { SKILL_FILE } from "../src/skill/scan";
+import { runOpenCodeApi, skillListingArgs, SkillListingSchema } from "./opencode-api";
 
 export const BUILTIN_PREFIX = "/builtin/";
-/** Limit for `opencode api get`; the local server answers in well under a second. */
-export const OPENCODE_TIMEOUT_MS = 60_000;
 
 export class CoverageError extends Error {
   constructor(message: string) {
@@ -89,12 +87,6 @@ export interface DiffInput {
   unresolved?: Unresolved[];
 }
 
-const OpenCodeListing = z.object({
-  data: z.array(
-    z.object({ id: z.string().min(1), path: z.string().min(1), description: z.string().optional() }),
-  ),
-});
-
 /** Reads the id, path and description of each skill from the output of `opencode api get /api/skill`. */
 export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
   let raw: unknown;
@@ -103,7 +95,7 @@ export function parseOpenCodeSkills(text: string): OpenCodeSkill[] {
   } catch (err) {
     throw new CoverageError(`opencode api output is not JSON: ${messageOf(err)}`);
   }
-  const parsed = OpenCodeListing.safeParse(raw);
+  const parsed = SkillListingSchema.safeParse(raw);
   if (!parsed.success) {
     const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
     throw new CoverageError(`opencode api output has no valid skill list: ${details.join("; ")}`);
@@ -119,7 +111,7 @@ function isAdvertised(skill: OpenCodeSkill): boolean {
 /** Compares OpenCode's skills with the served ones, by skill id. Output is sorted by id. */
 export function diffCoverage(input: DiffInput): CoverageReport {
   const served = new Map(input.served.map((skill) => [skill.id, skill]));
-  const notAdvertised = [...(input.notAdvertised ?? [])].sort(compareIds);
+  const notAdvertised = [...(input.notAdvertised ?? [])].sort((a, b) => compareText(a, b));
   const known = new Set([...input.opencode.map((skill) => skill.id), ...notAdvertised]);
   const builtins = new Set(input.builtins);
 
@@ -198,7 +190,7 @@ export async function runCoverage(deps: CoverageDeps): Promise<CoverageReport> {
       id: record.id,
       sourceId: record.sourceId,
       dir: record.root,
-      digest: await digestOf(join(record.root, "SKILL.md")),
+      digest: await digestOf(join(record.root, SKILL_FILE)),
     });
   }
 
@@ -245,34 +237,12 @@ async function digestOf(file: string): Promise<string> {
 }
 
 function byId(a: { id: string }, b: { id: string }): number {
-  return compareIds(a.id, b.id);
+  return compareText(a.id, b.id);
 }
 
-function compareIds(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/** Runs `opencode api get` for the repository at `cwd`. The argv is passed without a shell. */
+/** Runs `opencode api get` for the repository at `cwd` through the shared OpenCode runner. */
 export async function readOpenCodeListing(cwd: string): Promise<string> {
-  const argv = ["opencode", "api", "get", `/api/skill?location[directory]=${cwd}`];
-  let proc: Subprocess<"ignore", "pipe", "pipe">;
-  try {
-    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  } catch (err) {
-    throw new CoverageError(`cannot run opencode: ${messageOf(err)}`);
-  }
-  const timer = setTimeout(() => proc.kill(), OPENCODE_TIMEOUT_MS);
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (code !== 0) throw new CoverageError(`opencode api get failed (exit ${code}): ${stderr.trim().slice(0, 512)}`);
-    return stdout;
-  } finally {
-    clearTimeout(timer);
-  }
+  return runOpenCodeApi(skillListingArgs(cwd));
 }
 
 async function main(): Promise<number> {

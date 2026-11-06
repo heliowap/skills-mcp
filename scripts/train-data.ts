@@ -1,7 +1,7 @@
 // Training data for the trained ranker: `bun run train-data -- plan | check <id>|--all | teach | topup | stats`.
 // The plan, the batches, the teacher cache and the dataset live under trainedDir(); nothing enters the repo.
 // The teacher is Jev, run through the real classifier with the configured thresholds. Its answers use the
-// eval cache format, so scripts/eval.ts and this script share one cache implementation.
+// eval cache format, so scripts/eval.ts and this script share one cache implementation (scripts/eval-data.ts).
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -28,6 +28,7 @@ import {
   NEGATIVE_MIX,
   NO_TEACHER,
   normalizeText,
+  parseDatasetRows,
   parseExamples,
   type Plan,
   PlanSchema,
@@ -40,8 +41,8 @@ import {
   statsOf,
   TOPUP_MIN_POSITIVES,
 } from "../src/trained/dataset";
-import type { DecisionModel, SkillId, SkillRecord, Thresholds } from "../src/types";
-import { type CacheEntry, cachedModel, catalogHash, loadEntry, parseRequests, REQUESTS_PATH, saveEntry } from "./eval";
+import { compareText, type DecisionModel, type SkillId, type SkillRecord, type Thresholds } from "../src/types";
+import { type CacheEntry, cachedModel, catalogHash, DATASET_FILENAME, loadEntry, mapLimit, newEntry, readEvalTexts, saveEntry } from "./eval-data";
 
 export interface Io {
   out: (text: string) => void;
@@ -77,7 +78,7 @@ function pathsOf(): Paths {
     plan: join(dir, "plan.json"),
     batchFile: (id) => join(dir, "batches", `${id}.jsonl`),
     teacherCache: join(dir, "teacher-cache"),
-    dataset: join(dir, "dataset.jsonl"),
+    dataset: join(dir, DATASET_FILENAME),
     meta: join(dir, "dataset.meta.json"),
   };
 }
@@ -120,21 +121,9 @@ async function readDataset(): Promise<DatasetRow[]> {
   const path = pathsOf().dataset;
   const text = await readOptional(path);
   if (text === undefined) throw new TrainDataError(`no dataset at ${path}; run train-data teach first`);
-  return text
-    .split("\n")
-    .flatMap((line, index) => (line.trim() === "" ? [] : [parseRow(line, index + 1, path)]));
-}
-
-function parseRow(line: string, number: number, path: string): DatasetRow {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(line);
-  } catch {
-    throw new TrainDataError(`${path} line ${number} is not JSON`);
-  }
-  const parsed = DatasetRowSchema.safeParse(raw);
-  if (!parsed.success) throw new TrainDataError(`${path} line ${number} has an unexpected shape`);
-  return parsed.data;
+  const { rows, issues } = parseDatasetRows(text, path);
+  if (issues.length > 0) throw new TrainDataError(issues.join("\n"));
+  return rows.map(({ row }) => row);
 }
 
 function serializeRows(rows: readonly DatasetRow[]): string {
@@ -150,16 +139,12 @@ function planSkillOf(skill: SkillRecord): PlanSkill {
 }
 
 function byId(a: { id: string }, b: { id: string }): number {
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  return compareText(a.id, b.id);
 }
 
 async function loadCatalog(): Promise<SkillRecord[]> {
   const app = await createApp();
   return app.catalog().all().slice();
-}
-
-async function loadEvalTexts(): Promise<string[]> {
-  return parseRequests(await readFile(REQUESTS_PATH, "utf8")).map((request) => request.text);
 }
 
 /** The plan: positive batches from the catalog's families, then the two fixed negative batches. */
@@ -230,7 +215,7 @@ export async function runCheck(target: string, io: Io): Promise<number> {
     throw new TrainDataError(`no batch ${target} in plan.json`);
   }
   const selected = new Set(target === "--all" ? plan.batches.map((b) => b.id) : [target]);
-  const evalTexts = await loadEvalTexts();
+  const evalTexts = await readEvalTexts();
   const issues: string[] = [];
   const prior = new Set<string>();
   const totals = { positive: 0, negative: 0 };
@@ -262,21 +247,6 @@ export async function runCheck(target: string, io: Io): Promise<number> {
   return 0;
 }
 
-/** Counts every live call a model answers, so teach can report what it cost. */
-function countingModel(model: DecisionModel): DecisionModel & { readonly live: number } {
-  let live = 0;
-  return {
-    id: model.id,
-    get live() {
-      return live;
-    },
-    decide(request) {
-      live += 1;
-      return model.decide(request);
-    },
-  };
-}
-
 export interface TeacherRun {
   examples: readonly Example[];
   skills: readonly SkillRecord[];
@@ -285,6 +255,8 @@ export interface TeacherRun {
   cacheDir: string;
   shardSize?: number;
   timeoutMs?: number;
+  /** Counts the calls that reach the live model; the caller reads it after the run. */
+  counter?: { live: number };
 }
 
 /**
@@ -303,18 +275,13 @@ export async function runTeacher(run: TeacherRun): Promise<DatasetRow[]> {
     const skill = example.skillId === null ? undefined : skills.get(example.skillId);
     if (example.skillId !== null && skill === undefined) return makeRow(example, null, NO_TEACHER, "unknown-skill");
 
-    const entry: CacheEntry = (await loadEntry(run.cacheDir, run.model.id, hash, example.text)) ?? {
-      version: 1,
-      model: run.model.id,
-      catalogHash: hash,
-      request: example.text,
-      liveLatencyMs: null,
-      calls: [],
-    };
+    const entry: CacheEntry =
+      (await loadEntry(run.cacheDir, run.model.id, hash, example.text)) ??
+      newEntry(run.model.id, hash, example.text);
     const classifier = createClassifier({
       skills: () => run.skills,
       lexical: createBm25Ranker(),
-      model: cachedModel(entry, run.model),
+      model: cachedModel(entry, run.model, { counter: run.counter }),
       thresholds: run.thresholds,
       shardSize,
       timeoutMs,
@@ -325,20 +292,6 @@ export async function runTeacher(run: TeacherRun): Promise<DatasetRow[]> {
   });
 }
 
-/** Runs `worker` over `items` with at most `limit` in flight. Results keep the input order. */
-async function mapLimit<T, R>(items: readonly T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const lane = async (): Promise<void> => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await worker(items[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
-  return results;
-}
 
 export interface TeachOptions {
   /** The teacher to ask. Tests inject a stub; by default the configured decision model is built from the environment. */
@@ -360,7 +313,7 @@ export async function runTeach(options: TeachOptions): Promise<number> {
   const model = options.model ?? liveModelFor(config);
   const thresholds = resolveThresholds(config.decision.model ?? model.id, config.decision.thresholds);
   const skills = await loadCatalog();
-  const evalTexts = await loadEvalTexts();
+  const evalTexts = await readEvalTexts();
   const p = pathsOf();
 
   const items: ScreenItem[] = [];
@@ -384,15 +337,16 @@ export async function runTeach(options: TeachOptions): Promise<number> {
     .map((s) => makeRow(s.example, s.contentHash, NO_TEACHER, s.drop));
   const pending = screened.filter((s) => s.drop === undefined).map((s) => s.example);
 
-  const counted = countingModel(model);
+  const counter = { live: 0 };
   const answered = await runTeacher({
     examples: pending,
     skills,
-    model: counted,
+    model,
     thresholds,
     cacheDir: p.teacherCache,
     shardSize: config.shardSize,
     timeoutMs: config.timeoutMs,
+    counter,
   });
 
   const rows = sortRows([...dropped, ...answered]);
@@ -404,7 +358,7 @@ export async function runTeach(options: TeachOptions): Promise<number> {
 
   const stats = statsOf(rows);
   options.io.out(
-    `teach: ${rows.length} rows; kept ${stats.byKind.positive.kept} positives and ${stats.byKind.negative.kept} negatives; live teacher calls ${counted.live}`,
+    `teach: ${rows.length} rows; kept ${stats.byKind.positive.kept} positives and ${stats.byKind.negative.kept} negatives; live teacher calls ${counter.live}`,
   );
   if (missing.length > 0) options.io.out(`not generated yet, skipped: ${missing.join(", ")}`);
   return 0;

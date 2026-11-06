@@ -8,6 +8,7 @@ import type { SkillRecord, TrainedRanker } from "../types";
 import { NONE_CLASS } from "./dataset";
 import type { FeatureSpec } from "./features";
 import { createTrainedRanker } from "./ranker";
+import { compareText } from "../types";
 
 /** Writing an artifact whose parts disagree, or that the schema rejects. */
 export class ArtifactError extends Error {
@@ -122,7 +123,7 @@ function sha256Of(bytes: Uint8Array): string {
 
 /** Keys in code-unit order, so the same map always serializes to the same bytes. */
 function sortedRecord<T>(record: Record<string, T>): Record<string, T> {
-  return Object.fromEntries(Object.entries(record).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return Object.fromEntries(Object.entries(record).sort(([a], [b]) => compareText(a, b)));
 }
 
 /** Manifest JSON with a fixed key order, independent of the caller's object. */

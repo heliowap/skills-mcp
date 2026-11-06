@@ -5,103 +5,58 @@
 // and replayed, so there is one scoring path. The trained ranker and expansions are read from trainedDir();
 // before either is scored, the leakage guard checks that no kept training row shares text with an eval request.
 
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { z } from "zod";
-import { createApp } from "../src/app";
-import { loadConfig, ThresholdsSchema } from "../src/config";
+import { createApp, type Ranking } from "../src/app";
+import { loadConfig } from "../src/config";
 import { createDecisionModel } from "../src/decision/ai-sdk";
-import { resolveThresholds } from "../src/decision/providers";
+import { DEFAULT_THRESHOLDS, resolveThresholds } from "../src/decision/providers";
 import { trainedDir } from "../src/paths";
 import { createBm25Ranker } from "../src/rank/bm25";
 import { createClassifier } from "../src/rank/classifier";
 import { messageOf } from "../src/text";
 import { loadExpansions, loadTrainedRanker } from "../src/trained/artifact";
-import { DatasetRowSchema, leaksEval } from "../src/trained/dataset";
+import { type DatasetRow, leaksEval, parseDatasetRows } from "../src/trained/dataset";
 import type {
-  Answer,
   Classifier,
   DecisionModel,
   FindResult,
   LexicalRanker,
-  Question,
   SkillRecord,
   Thresholds,
   TrainedRanker,
 } from "../src/types";
+import {
+  CACHE_DIR,
+  type CacheEntry,
+  type CachedCall,
+  cachedModel,
+  catalogHash,
+  DATASET_FILENAME,
+  type EvalRequest,
+  EvalError,
+  loadEntry,
+  mapLimit,
+  newEntry,
+  parseRequests,
+  REQUESTS_PATH,
+  saveEntry,
+} from "./eval-data";
 
-export const REQUESTS_PATH = join(import.meta.dir, "..", "eval", "requests.jsonl");
-export const CACHE_DIR = join(import.meta.dir, "..", "eval", "cache");
-/** The training rows, under trainedDir(). The leakage guard reads them before any trained or expanded run. */
-const DATASET_FILE = "dataset.jsonl";
 /** Top-K depths at which the trained ranker's gold recall is reported, for a future prefilter decision. */
 const RECALL_KS = [20, 40, 60] as const;
 /** Rankers that never call a model: no threshold, so no sweep. */
 const LEXICAL_RANKERS = ["bm25", "bm25-expanded", "trained"] as const;
 /** Grid step for the threshold sweep. */
 export const SWEEP_STEP = 0.05;
-/** The cookbook defaults, as config.ts documents them. Read from the schema so they cannot drift. */
-export const COOKBOOK_DEFAULTS: Thresholds = ThresholdsSchema.parse({});
+/** The cookbook defaults, as documented. The thresholds home is the decision providers table. */
+export const COOKBOOK_DEFAULTS: Thresholds = DEFAULT_THRESHOLDS;
 /** Every gate and fits check passes at zero, so a pass at zero asks every question the classifier can ask. */
 const ZERO_THRESHOLDS: Thresholds = { action: 0, named: 0, fits: 0 };
 /** The "top-3" in the report. */
 const TOP_K = 3;
 /** Requests in flight at once; each one makes two or three model calls. */
 const CONCURRENCY = 2;
-
-export class EvalError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "EvalError";
-  }
-}
-
-const KINDS = ["covered", "everyday", "conceptual", "near-miss-tool"] as const;
-
-const RequestSchema = z
-  .object({
-    id: z.string().min(1),
-    kind: z.enum(KINDS),
-    text: z.string().min(1),
-    gold: z.string().min(1).nullable(),
-  })
-  .superRefine((request, ctx) => {
-    if (request.kind === "covered" && request.gold === null) {
-      ctx.addIssue({ code: "custom", path: ["gold"], message: "a covered request needs its gold skill id" });
-    }
-    if (request.kind !== "covered" && request.gold !== null) {
-      ctx.addIssue({ code: "custom", path: ["gold"], message: `a ${request.kind} request has no skill, so gold is null` });
-    }
-  });
-
-/** A labelled request. `gold` is the one skill id that covers it, or null when no served skill does. */
-export type EvalRequest = z.infer<typeof RequestSchema>;
-
-/** Reads the JSONL request set. Each line is checked; an error names the line. */
-export function parseRequests(text: string): EvalRequest[] {
-  const requests: EvalRequest[] = [];
-  const seen = new Set<string>();
-  text.split("\n").forEach((line, index) => {
-    if (line.trim() === "") return;
-    const where = `eval/requests.jsonl line ${index + 1}`;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch (err) {
-      throw new EvalError(`${where}: not JSON (${messageOf(err)})`);
-    }
-    const parsed = RequestSchema.safeParse(raw);
-    if (!parsed.success) {
-      const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
-      throw new EvalError(`${where}: ${details.join("; ")}`);
-    }
-    if (seen.has(parsed.data.id)) throw new EvalError(`${where}: duplicate request id ${parsed.data.id}`);
-    seen.add(parsed.data.id);
-    requests.push(parsed.data);
-  });
-  return requests;
-}
 
 /** What one `find` returned for one request. `latencyMs` is null when no live call was timed. */
 export interface Outcome {
@@ -206,149 +161,13 @@ function distanceFromDefaults(t: Thresholds): number {
   );
 }
 
-const AnswerSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("choice"), key: z.string(), choice: z.string(), probabilities: z.record(z.string(), z.number()) }),
-  z.object({ kind: z.literal("boolean"), key: z.string(), probability: z.number() }),
-]);
-
-const CachedCallSchema = z.object({
-  /** The question keys in order. The sweep looks calls up by these once the cache is verified. */
-  keys: z.string(),
-  /** Hash of the state and the full question list. A changed question means a stale answer. */
-  signature: z.string(),
-  answers: z.array(z.tuple([z.string(), AnswerSchema])),
-});
-
-const CacheEntrySchema = z.object({
-  version: z.literal(1),
-  model: z.string(),
-  catalogHash: z.string(),
-  request: z.string(),
-  /** Latency of the last pass that made live calls. Replays keep it, so the report stays honest. */
-  liveLatencyMs: z.number().nullable(),
-  calls: z.array(CachedCallSchema),
-});
-
-export type CacheEntry = z.infer<typeof CacheEntrySchema>;
-type CachedCall = z.infer<typeof CachedCallSchema>;
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-/** Hash of the sorted, de-duplicated skill ids. Descriptions are not in it: a changed description fails the signature check instead. */
-export function catalogHash(ids: readonly string[]): string {
-  return sha256([...new Set(ids)].sort().join("\n"));
-}
-
-/** One cache file per (catalog, model, request). The JSON array keeps the parts from running together. */
-export function cacheFileName(hash: string, model: string, request: string): string {
-  return `${sha256(JSON.stringify([hash, model, request]))}.json`;
-}
-
-function keysOf(questions: readonly Question[]): string {
-  return questions.map((question) => question.key).join("\n");
-}
-
-function signatureOf(state: Record<string, string>, questions: readonly Question[]): string {
-  return sha256(JSON.stringify({ state, questions }));
-}
-
-function toMap(answers: readonly [string, Answer][]): Map<string, Answer> {
-  return new Map(answers);
-}
-
-/** Raised when a replay is asked for an answer that was never recorded. The classifier turns it into a fallback. */
-export class CacheMissError extends EvalError {
-  constructor(request: string, keys: string) {
-    super(`no cached answer for request "${request}" (questions ${keys.split("\n").join(", ")})`);
-    this.name = "CacheMissError";
-  }
-}
-
-export interface CachedModelOptions {
-  /** Counts the live calls made through `live`. */
-  counter?: { live: number };
-  /**
-   * Match by signature (the default: a changed question is a miss). Matching by keys alone is sound
-   * only for calls that a verified pass has already matched by signature; the sweep does that.
-   */
-  verify?: boolean;
-  /** Told each recorded call that answered a question, so a caller can keep exactly those. */
-  onReplay?: (call: CachedCall) => void;
-}
-
-/**
- * A DecisionModel that serves recorded calls from `entry` and, when `live` is set, asks it for any
- * call not yet recorded and records the answer. Without `live` a miss throws CacheMissError.
- */
-export function cachedModel(entry: CacheEntry, live: DecisionModel | undefined, options: CachedModelOptions = {}): DecisionModel {
-  const verify = options.verify ?? true;
-  return {
-    id: entry.model,
-    async decide({ state, questions, signal }) {
-      const keys = keysOf(questions);
-      const hit = verify
-        ? entry.calls.find((call) => call.signature === signatureOf(state, questions))
-        : entry.calls.findLast((call) => call.keys === keys);
-      if (hit) {
-        options.onReplay?.(hit);
-        return toMap(hit.answers);
-      }
-      if (!live) throw new CacheMissError(entry.request, keys);
-
-      const answers = await live.decide({ state, questions, signal });
-      const call: CachedCall = { keys, signature: signatureOf(state, questions), answers: [...answers] };
-      entry.calls.push(call);
-      if (options.counter) options.counter.live += 1;
-      return toMap(call.answers);
-    },
-  };
-}
-
-function newEntry(model: string, hash: string, request: string): CacheEntry {
-  return { version: 1, model, catalogHash: hash, request, liveLatencyMs: null, calls: [] };
-}
-
-export async function loadEntry(dir: string, model: string, hash: string, request: string): Promise<CacheEntry | undefined> {
-  const path = join(dir, cacheFileName(hash, model, request));
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new EvalError(`cannot read cache entry ${path}: ${messageOf(err)}`);
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch (err) {
-    throw new EvalError(`cache entry ${path} is not JSON: ${messageOf(err)}`);
-  }
-  const parsed = CacheEntrySchema.safeParse(raw);
-  if (!parsed.success) throw new EvalError(`cache entry ${path} has an unexpected shape`);
-  return parsed.data;
-}
-
-export async function saveEntry(dir: string, entry: CacheEntry): Promise<void> {
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, cacheFileName(entry.catalogHash, entry.model, entry.request));
-  await writeFile(path, `${JSON.stringify(entry, null, 2)}\n`);
-}
-
-/** The non-model rankers a classifier can use. Plain BM25 when none is given. */
-interface Rankers {
-  lexical: LexicalRanker;
-  trained?: TrainedRanker;
-}
-
 function classifierFor(
   skills: readonly SkillRecord[],
   model: DecisionModel | undefined,
   thresholds: Thresholds,
   shardSize: number,
   timeoutMs: number,
-  rankers: Rankers = { lexical: createBm25Ranker() },
+  rankers: Ranking = { lexical: createBm25Ranker() },
 ): Classifier {
   return createClassifier({
     skills: () => skills,
@@ -378,21 +197,6 @@ function toOutcome(request: EvalRequest, result: FindResult, latencyMs: number |
   };
 }
 
-/** Runs `worker` over `items` with at most `limit` in flight. Results keep the input order. */
-async function mapLimit<T, R>(items: readonly T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const lane = async (): Promise<void> => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await worker(items[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
-  return results;
-}
-
 /** The BM25 ranker: no gate, so it always returns candidates and never suggests. */
 export async function runLexicalRanker(
   skills: readonly SkillRecord[],
@@ -419,7 +223,7 @@ export async function runTrainedRanker(
   requests: readonly EvalRequest[],
   shardSize: number,
   timeoutMs: number,
-  rankers: Rankers,
+  rankers: Ranking,
 ): Promise<Outcome[]> {
   const classifier = classifierFor(skills, undefined, COOKBOOK_DEFAULTS, shardSize, timeoutMs, rankers);
   const outcomes: Outcome[] = [];
@@ -471,6 +275,9 @@ export interface ModelRun {
  * Scores the requests with the model at `thresholds`, filling the cache as it goes. Two passes per
  * request: the first at the real thresholds gives the reported result and latency; the second at zero
  * thresholds records the shortlist question the gate may hide, so a sweep never needs the network.
+ * No trained ranker is injected here on purpose: these rows measure the model path alone, so a failed
+ * model falls back to plain BM25 (`bm25-fallback`) while the server would try the trained ranker
+ * first; the trained chain is measured on its own by `--ranker trained`.
  */
 export async function runModelRanker(run: ModelRun): Promise<Outcome[]> {
   return mapLimit(run.requests, CONCURRENCY, async (request) => {
@@ -680,24 +487,12 @@ export async function assertNoEvalLeak(path: string, requests: readonly EvalRequ
   } catch (err) {
     throw new EvalError(`leakage guard cannot read ${path} (${messageOf(err)}); run bun run train-data first`);
   }
+  const { rows, issues } = parseDatasetRows(text, path);
+  if (issues.length > 0) throw new EvalError(issues.join("\n"));
   const evalTexts = requests.map((request) => request.text);
-  const leaks: string[] = [];
-  text.split("\n").forEach((raw, index) => {
-    if (raw.trim() === "") return;
-    const where = `${path} line ${index + 1}`;
-    let json: unknown;
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      throw new EvalError(`${where}: not JSON`);
-    }
-    const parsed = DatasetRowSchema.safeParse(json);
-    if (!parsed.success) throw new EvalError(`${where}: not a dataset row`);
-    const row = parsed.data;
-    if (row.keep && leaksEval(row.text, evalTexts)) {
-      leaks.push(`${where} (${row.kind}, ${row.skillId ?? "no skill"}, ${row.source})`);
-    }
-  });
+  const leaks = rows
+    .filter(({ row }) => row.keep && leaksEval(row.text, evalTexts))
+    .map(({ line, row }) => `${path} line ${line} (${row.kind}, ${row.skillId ?? "no skill"}, ${row.source})`);
   if (leaks.length > 0) {
     throw new EvalError(`leakage guard: ${leaks.length} kept training row(s) share text with an eval request: ${leaks.join("; ")}`);
   }
@@ -745,7 +540,7 @@ export async function main(argv: readonly string[], options: MainOptions = {}): 
 
   if (args.ranker === "bm25-expanded" || args.ranker === "trained") {
     const dir = trainedDir();
-    const datasetPath = join(dir, DATASET_FILE);
+    const datasetPath = join(dir, DATASET_FILENAME);
     if (args.ranker === "bm25-expanded") {
       const lexical = await expandedBm25(dir);
       if (!lexical) throw new EvalError(`expansions.json is missing or invalid in ${dir}. Run \`bun run train\` first`);

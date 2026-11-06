@@ -1,4 +1,4 @@
-// Text helpers for warnings and errors. Pure functions only.
+// Text helpers for messages and sanitation. Pure functions only.
 
 /** Default cap for one inline fragment, in UTF-16 units, ellipsis included. */
 export const MAX_INLINE_CHARS = 200;
@@ -28,6 +28,11 @@ export function stripTags(text: string): string {
   return value;
 }
 
+/** Tags stripped and whitespace collapsed: the shared core of every sanitizer below. */
+export function stripAndCollapse(text: string): string {
+  return stripTags(stripControls(text)).replace(/\s+/g, " ").trim();
+}
+
 /**
  * Makes untrusted text fit for one line of a message: control and invisible format characters
  * are removed (whitespace becomes a space), XML-like tags are stripped until none remain,
@@ -35,18 +40,21 @@ export function stripTags(text: string): string {
  */
 export function sanitizeInline(text: string, maxChars: number = MAX_INLINE_CHARS): string {
   const limit = Math.max(1, Math.floor(maxChars));
-  let value = stripTags(stripControls(text.slice(0, MAX_INPUT_CHARS)));
-
-  value = value.replace(/\s+/g, " ").trim();
+  const value = stripAndCollapse(text.slice(0, MAX_INPUT_CHARS));
   if (value.length <= limit) return value;
-
-  let cut = value.slice(0, limit - ELLIPSIS.length);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return `${cut.trimEnd()}${ELLIPSIS}`;
+  return `${truncateUnits(value, limit - ELLIPSIS.length)}${ELLIPSIS}`;
 }
 
 /** The message of an Error; any other thrown value is shown in its string form. */
 export function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The first `max` UTF-16 units of `text`, without ending on a lone surrogate. */
+export function truncateUnits(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut.trimEnd();
 }

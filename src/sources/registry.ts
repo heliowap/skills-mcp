@@ -109,8 +109,12 @@ async function syncWithCacheFallback(
       const cached = await syncOne(spec, cache, { offline: true, signal: opts.signal }, adapters);
       const warning = `source ${sanitizeInline(spec.id)}: online sync failed (${failure}); using the cached copy`;
       return { sourceId: spec.id, ok: true, result: { ...cached, warnings: [...cached.warnings, warning] } };
-    } catch {
-      return { sourceId: spec.id, ok: false, error: failure };
+    } catch (fallbackErr) {
+      return {
+        sourceId: spec.id,
+        ok: false,
+        error: `${failure}; cached copy unavailable (${sanitizeDetail(messageOf(fallbackErr))})`,
+      };
     }
   }
 }

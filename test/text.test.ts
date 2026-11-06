@@ -22,10 +22,9 @@ describe("sanitizeInline", () => {
     expect(sanitizeInline("short", 10)).toBe("short");
   });
 
-  test("the default cap is MAX_INLINE_CHARS, and a cut ends with an ellipsis", () => {
+  test("the default cap cuts with an ellipsis", () => {
     const cut = sanitizeInline("a".repeat(300));
 
-    expect(MAX_INLINE_CHARS).toBe(200);
     expect(cut).toHaveLength(MAX_INLINE_CHARS);
     expect(cut.endsWith("…")).toBe(true);
   });

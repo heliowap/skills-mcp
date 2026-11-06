@@ -16,10 +16,9 @@ import {
   isValidId,
   isValidName,
   sanitizeDescription,
-  truncateUnits,
 } from "./skill/validate";
-import { sanitizeInline, stripControls } from "./text";
-import type { Catalog, MaterializedSource, ReadError, ShadowedSkill, SkillId, SkillRecord } from "./types";
+import { sanitizeInline, stripControls, truncateUnits } from "./text";
+import { compareText, type Catalog, type MaterializedSource, type ReadError, type ShadowedSkill, type SkillId, type SkillRecord } from "./types";
 
 export interface BuiltCatalog {
   catalog: Catalog;
@@ -96,7 +95,6 @@ export async function buildCatalog(sources: MaterializedSource[], options: Build
       );
     });
 
-    // Across sources: the earlier source keeps the id.
     for (const entry of byId) {
       const id = entry.record.id;
       const current = winners.get(id);
@@ -186,10 +184,6 @@ function compareCopies(a: Accepted, b: Accepted): number {
     compareText(a.record.relPath, b.record.relPath) ||
     a.rootIndex - b.rootIndex
   );
-}
-
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function mebibytes(bytes: number): string {

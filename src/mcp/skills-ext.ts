@@ -4,10 +4,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { type Skill, type SkillSource, SkillsExtension } from "@modelcontextprotocol/server/ext/skills";
 import type { App } from "../app";
+import { SKILL_FILE } from "../skill/scan";
 import type { SkillRecord } from "../types";
 
 const SCHEME = "skill://";
-const SKILL_FILE = "SKILL.md";
 
 /** Attaches the extension before the server connects. Calling it again on the same server is an error. */
 export function attachSkills(server: McpServer, app: App): void {

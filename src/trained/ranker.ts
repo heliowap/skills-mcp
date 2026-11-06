@@ -1,6 +1,6 @@
 // The trained ranker: a softmax over the catalog's skills plus the abstain class, with masking and a stored threshold.
 
-import type { SkillId, SkillRecord, TrainedRanker, TrainedRanking } from "../types";
+import { compareText, type SkillId, type SkillRecord, type TrainedRanker, type TrainedRanking } from "../types";
 import { NONE_CLASS } from "./dataset";
 import { vectorize, type Vectorizer } from "./features";
 import { predictProba, type LinearModel } from "./linear";
@@ -16,10 +16,6 @@ export interface LoadedModel {
 
 interface Scored { id: string; probability: number }
 
-function compareIds(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /**
  * Higher probability first. An exact tie with the abstain class goes to abstain, the conservative
  * choice; ties among skills are ordered by id.
@@ -28,7 +24,7 @@ function compareScored(a: Scored, b: Scored): number {
   if (a.probability !== b.probability) return b.probability - a.probability;
   if (a.id === NONE_CLASS) return -1;
   if (b.id === NONE_CLASS) return 1;
-  return compareIds(a.id, b.id);
+  return compareText(a.id, b.id);
 }
 
 export function createTrainedRanker(loaded: LoadedModel): TrainedRanker {

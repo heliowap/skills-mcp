@@ -1,7 +1,13 @@
 import { z } from "zod";
-import { ThresholdsSchema } from "../config";
 import type { Thresholds } from "../types";
 import table from "./providers.json";
+
+/** Per-model thresholds; each defaults to the documented value. */
+export const ThresholdsSchema = z.object({
+  action: z.number().min(0).max(1).default(0.3),
+  named: z.number().min(0).max(1).default(0.5),
+  fits: z.number().min(0).max(1).default(0.3),
+});
 
 /** Which AI SDK factory builds the model. */
 const ProviderSchema = z.enum(["typesafe-ai", "gateway"]);
@@ -32,7 +38,8 @@ export function resolveKey(entry: ProviderEntry, env: Env): { name: string; valu
   return undefined;
 }
 
-const DEFAULT_THRESHOLDS: Thresholds = ThresholdsSchema.parse({});
+/** The thresholds for one model when nothing overrides them: the documented defaults. */
+export const DEFAULT_THRESHOLDS: Thresholds = ThresholdsSchema.parse({});
 
 /**
  * The thresholds for one model. The config entry for that model wins, then the

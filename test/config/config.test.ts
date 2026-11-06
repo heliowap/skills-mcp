@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigError, ThresholdsSchema, loadConfig, saveConfig } from "../../src/config";
+import { ConfigError, loadConfig, saveConfig } from "../../src/config";
+import { ThresholdsSchema } from "../../src/decision/providers";
 
 let dir: string;
 let savedConfig: string | undefined;

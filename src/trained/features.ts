@@ -1,5 +1,7 @@
 // TF-IDF features for the trained ranker: word n-grams and per-word character n-grams.
 
+import { compareText } from "../types";
+
 /** Which n-gram families a vectorizer uses; `char: null` disables character n-grams. */
 export interface FeatureSpec { word: [1, 2]; char: [3, 5] | null; minDf: number; maxFeatures: number }
 
@@ -51,10 +53,6 @@ function countFeatures(text: string, spec: FeatureSpec): Map<string, number> {
   return counts;
 }
 
-function compareKeys(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /** Builds the vocabulary (keys with df ≥ minDf, ordered by −df then key, capped at maxFeatures) and smoothed idf. */
 export function fitVectorizer(texts: readonly string[], spec: FeatureSpec): Vectorizer {
   const df = new Map<string, number>();
@@ -64,7 +62,7 @@ export function fitVectorizer(texts: readonly string[], spec: FeatureSpec): Vect
 
   const kept = [...df]
     .filter(([, count]) => count >= spec.minDf)
-    .sort((a, b) => b[1] - a[1] || compareKeys(a[0], b[0]))
+    .sort((a, b) => b[1] - a[1] || compareText(a[0], b[0]))
     .slice(0, Math.max(0, spec.maxFeatures));
 
   const n = texts.length;

@@ -11,7 +11,7 @@ import {
   EvalError,
   loadEntry,
   saveEntry,
-} from "../../scripts/eval";
+} from "../../scripts/eval-data";
 import type { DecisionModel, Question } from "../../src/types";
 import { scriptedModel } from "../rank/helpers";
 
@@ -68,7 +68,7 @@ describe("cachedModel", () => {
     const live = scriptedModel({ scores: { pdf: 0.9 } });
     const entry = emptyEntry();
     const stats = { live: 0 };
-    const model = cachedModel(entry, countingModel(live, stats));
+    const model = cachedModel(entry, live, { counter: stats });
 
     const first = await model.decide({ state: { request: "fill" }, questions: [pdfQuestion] });
     const replay = await model.decide({ state: { request: "fill" }, questions: [pdfQuestion] });
@@ -86,7 +86,7 @@ describe("cachedModel", () => {
   test("asks the live model again when the questions changed since the answer was cached", async () => {
     const live = scriptedModel({ scores: { pdf: 0.9 }, fits: { pdf: 0.8 } });
     const stats = { live: 0 };
-    const model = cachedModel(emptyEntry(), countingModel(live, stats));
+    const model = cachedModel(emptyEntry(), live, { counter: stats });
 
     await model.decide({ state: { request: "fill" }, questions: [pdfQuestion] });
     await model.decide({ state: { request: "fill" }, questions: [pdfQuestion, fitsQuestion] });
@@ -146,14 +146,3 @@ describe("loadEntry and saveEntry", () => {
     expect(await loadEntry(scratch, entry.model, entry.catalogHash, entry.request)).toEqual(entry);
   });
 });
-
-/** Counts the live calls that reach `inner`, so a test can tell replays from real asks. */
-function countingModel(inner: DecisionModel, stats: { live: number }): DecisionModel {
-  return {
-    id: inner.id,
-    decide: (req) => {
-      stats.live += 1;
-      return inner.decide(req);
-    },
-  };
-}

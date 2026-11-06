@@ -4,7 +4,7 @@
 import type { CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { App } from "../app";
-import { MAX_OWNER_CHARS, MAX_REPO_CHARS } from "../sources/github";
+import { MAX_REPO_SPEC_CHARS } from "../sources/github";
 import type { SyncOutcome } from "../sources/registry";
 import { MAX_RELATIVE_PATH_CHARS, MAX_SEGMENT_CHARS } from "../sources/shared";
 import { messageOf, sanitizeInline } from "../text";
@@ -24,11 +24,6 @@ export const ERROR_CHARS = 300;
 export const WARNING_CHARS = 300;
 /** Longest `kind` or `action` value accepted or echoed, in characters. */
 export const WORD_CHARS = 16;
-/**
- * Longest `repo` value accepted: an https URL with an owner, a repository name and `.git`, the
- * longest form parseGithubRepo takes.
- */
-export const REPO_CHARS = "https://github.com/".length + MAX_OWNER_CHARS + 1 + MAX_REPO_CHARS + ".git".length;
 /** Warnings shown in one `sources` result; the rest are only logged. */
 export const WARNINGS_SHOWN = 20;
 
@@ -41,7 +36,7 @@ const FindInput = z.object({
 const FindOutput = z.object({
   needsSkill: z.boolean().nullable(),
   suggestion: z.string().nullable(),
-  // "model", "bm25", "bm25-fallback", "trained" or "trained-fallback": a string, so the fixed cost stays low.
+  // A string, though RANKERS is a union: the fixed cost stays low.
   ranker: z.string(),
   reason: z.string().optional(),
   candidates: z.array(z.object({ id: z.string(), description: z.string(), score: z.number() })),
@@ -95,6 +90,7 @@ export class ToolInputError extends Error {
 /**
  * A source change an agent may not make. Local and command sources are trusted or run a program,
  * so the user adds and removes them through the config file or the admin CLI.
+ * The message names the admin CLI's sources commands; keep it in sync with the USAGE in src/cli.ts.
  */
 export class SourceRefused extends Error {
   constructor(kind: "local" | "cli", verb: "add" | "remove") {
@@ -240,7 +236,7 @@ function limitOf(limit: number | undefined): number | undefined {
 function checkSourcesBounds(input: SourcesInputShape): void {
   if (input.id !== undefined) bounded("id", input.id, MAX_SEGMENT_CHARS);
   if (input.kind !== undefined) bounded("kind", input.kind, WORD_CHARS);
-  if (input.repo !== undefined) bounded("repo", input.repo, REPO_CHARS);
+  if (input.repo !== undefined) bounded("repo", input.repo, MAX_REPO_SPEC_CHARS);
 }
 
 /** Turns the agent's flat fields into a GitHub source spec. Local and command sources are refused here. */

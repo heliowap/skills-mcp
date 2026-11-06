@@ -1,15 +1,16 @@
-import type {
-  Answer,
-  Classifier,
-  DecisionModel,
-  FindResult,
-  LexicalRanker,
-  Question,
-  SkillId,
-  SkillRecord,
-  Thresholds,
-  TrainedRanker,
-  TrainedRanking,
+import {
+  type Answer,
+  type Classifier,
+  compareText,
+  type DecisionModel,
+  type FindResult,
+  type LexicalRanker,
+  type Question,
+  type SkillId,
+  type SkillRecord,
+  type Thresholds,
+  type TrainedRanker,
+  type TrainedRanking,
 } from "../types";
 import { messageOf } from "../text";
 import { ClassifierError } from "./errors";
@@ -49,7 +50,10 @@ const NAMED_QUESTION =
   "Does the request ask for a specific named tool, format, template, or method to be used, rather than for general help?";
 
 export interface ClassifierOptions {
-  /** Read on every `find`, so a reloaded catalog is seen without rebuilding the classifier. */
+  /**
+   * Read on every `find`, so a reloaded catalog is seen without rebuilding the classifier.
+   * The catalog keeps one skill per id; duplicate ids would collide as question option keys.
+   */
   skills: () => readonly SkillRecord[];
   /** Used when no trained ranker answers: the last resort for the no-model path and the fallback. */
   lexical: LexicalRanker;
@@ -64,8 +68,6 @@ export interface ClassifierOptions {
   shardSize: number;
   /** Deadline for each decision round (call 1, then call 2). */
   timeoutMs: number;
-  /** Optional cap on each option's description, applied on top of the per-question budget. */
-  descriptionBudgetChars?: number;
 }
 
 /** One option with its probability. It carries the skill record, so no later step looks skills up by id. */
@@ -88,13 +90,17 @@ export function createClassifier(opts: ClassifierOptions): Classifier {
   return {
     async find(task, findOpts) {
       const limit = findOpts?.limit ?? DEFAULT_LIMIT;
-      const skills = uniqueById(opts.skills());
+      const skills = opts.skills();
       const { model } = opts;
-      if (!model) return withoutModel(opts, task, skills, limit);
+      if (!model) return answeredWithoutModel(opts, task, skills, limit, { ranker: "trained" });
       try {
         return await runModelFlow(model, task, skills, limit, opts, findOpts?.signal);
       } catch (err) {
-        return modelFailed(opts, model.id, messageOf(err), task, skills, limit);
+        return answeredWithoutModel(opts, task, skills, limit, {
+          ranker: "trained-fallback",
+          model: model.id,
+          reason: messageOf(err),
+        });
       }
     },
   };
@@ -111,70 +117,70 @@ type TrainedAttempt =
  * through to lexical ranking. The answer is checked against the current catalog: a suggestion that is
  * not in it is dropped, and so are candidates that are not in it. A suggestion is kept only with needsSkill.
  */
-function askTrained(opts: ClassifierOptions, task: string, skills: SkillRecord[], limit: number): TrainedAttempt {
+function askTrained(opts: ClassifierOptions, task: string, skills: readonly SkillRecord[], limit: number): TrainedAttempt {
   try {
     const ranker = opts.trained?.();
     if (!ranker) return { kind: "absent" };
     const ranking: TrainedRanking = ranker.rank(task, skills, limit);
-    const byId = new Map(skills.map((s) => [s.id, s]));
-    const suggestion = ranking.needsSkill && ranking.suggestion !== null && byId.has(ranking.suggestion) ? ranking.suggestion : null;
-    const candidates = ranking.candidates
-      .flatMap(({ id, score }) => {
-        const skill = byId.get(id);
-        return skill ? [{ id, description: skill.description, score }] : [];
-      })
-      .slice(0, limit);
-    return { kind: "ranked", needsSkill: ranking.needsSkill, suggestion, candidates };
+    const suggestion = ranking.needsSkill && ranking.suggestion !== null && skills.some((s) => s.id === ranking.suggestion)
+      ? ranking.suggestion
+      : null;
+    return { kind: "ranked", needsSkill: ranking.needsSkill, suggestion, candidates: candidatesOf(skills, ranking.candidates, limit) };
   } catch (err) {
     return { kind: "failed", reason: `trained ranker failed: ${messageOf(err)}` };
   }
 }
 
-function withoutModel(opts: ClassifierOptions, task: string, skills: SkillRecord[], limit: number): FindResult {
-  const attempt = askTrained(opts, task, skills, limit);
-  if (attempt.kind === "ranked") {
-    return { needsSkill: attempt.needsSkill, suggestion: attempt.suggestion, candidates: attempt.candidates, ranker: "trained" };
-  }
-  const lexical = lexicalCandidates(opts.lexical, task, skills, limit);
-  return attempt.kind === "failed"
-    ? { needsSkill: null, suggestion: null, candidates: lexical, ranker: "bm25", reason: attempt.reason }
-    : { needsSkill: null, suggestion: null, candidates: lexical, ranker: "bm25" };
+/** How `find` answers when no model is asked: the trained ranker, or the lexical one under it. */
+interface WithoutModel {
+  ranker: "trained" | "trained-fallback";
+  model?: string;
+  reason?: string;
 }
 
-function modelFailed(
-  opts: ClassifierOptions,
-  modelId: string,
-  reason: string,
-  task: string,
-  skills: SkillRecord[],
-  limit: number,
-): FindResult {
+/** The ranker name for the lexical answer under the given trained-ranker name. */
+function lexicalRankerOf(ranker: WithoutModel["ranker"]): "bm25" | "bm25-fallback" {
+  return ranker === "trained" ? "bm25" : "bm25-fallback";
+}
+
+/**
+ * Asks the trained ranker first; its failure, or its absence, leaves lexical ranking. When the
+ * model failed, its reason leads the reported one, so one line says why no model answered.
+ */
+function answeredWithoutModel(opts: ClassifierOptions, task: string, skills: readonly SkillRecord[], limit: number, o: WithoutModel): FindResult {
   const attempt = askTrained(opts, task, skills, limit);
   if (attempt.kind === "ranked") {
     return {
       needsSkill: attempt.needsSkill,
       suggestion: attempt.suggestion,
       candidates: attempt.candidates,
-      ranker: "trained-fallback",
-      model: modelId,
-      reason,
+      ranker: o.ranker,
+      ...(o.model === undefined ? {} : { model: o.model }),
+      ...(o.reason === undefined ? {} : { reason: o.reason }),
     };
   }
-  const fullReason = attempt.kind === "failed" ? `${reason}; ${attempt.reason}` : reason;
+  const reason =
+    o.reason === undefined
+      ? attempt.kind === "failed"
+        ? attempt.reason
+        : undefined
+      : attempt.kind === "failed"
+        ? `${o.reason}; ${attempt.reason}`
+        : o.reason;
   return {
     needsSkill: null,
     suggestion: null,
     candidates: lexicalCandidates(opts.lexical, task, skills, limit),
-    ranker: "bm25-fallback",
-    model: modelId,
-    reason: fullReason,
+    ranker: lexicalRankerOf(o.ranker),
+    ...(o.model === undefined ? {} : { model: o.model }),
+    ...(reason === undefined ? {} : { reason }),
   };
 }
 
 async function runModelFlow(
   model: DecisionModel,
   task: string,
-  skills: SkillRecord[],
+  skills: readonly SkillRecord[],
   limit: number,
   opts: ClassifierOptions,
   parentSignal: AbortSignal | undefined,
@@ -183,14 +189,13 @@ async function runModelFlow(
     return { needsSkill: false, suggestion: null, candidates: [], ranker: "model", model: model.id };
   }
 
-  // Call 1: one choice per shard, decided in parallel. Only shard 0 also carries the gate.
   const shards = shardOf(skills, opts.shardSize);
   const firstRound = await withDeadline(parentSignal, opts.timeoutMs, (signal) =>
     Promise.all(
       shards.map((shard, i) =>
         model.decide({
           state: { request: task },
-          questions: firstRoundQuestions(i, shard, opts.descriptionBudgetChars),
+          questions: firstRoundQuestions(i, shard),
           signal,
         }),
       ),
@@ -208,14 +213,12 @@ async function runModelFlow(
     score: probability,
   }));
 
-  // Gate: continue only if the action mean or the named score reaches its threshold.
   const { action, named } = gateScores(roundAt(firstRound, 0));
   const { thresholds } = opts;
   if (!(action >= thresholds.action || named >= thresholds.named)) {
     return { needsSkill: false, suggestion: null, candidates, ranker: "model", model: model.id };
   }
 
-  // Call 2: rerank the shortlist in full, with one fits question each.
   const shortlist = merged.slice(0, SHORTLIST).map((r) => r.skill);
   const second = await withDeadline(parentSignal, opts.timeoutMs, (signal) =>
     model.decide({ state: { request: task }, questions: rerankQuestions(shortlist), signal }),
@@ -235,17 +238,13 @@ async function runModelFlow(
   };
 }
 
-function firstRoundQuestions(
-  shardIndex: number,
-  shard: SkillRecord[],
-  descriptionBudgetChars: number | undefined,
-): Question[] {
+function firstRoundQuestions(shardIndex: number, shard: SkillRecord[]): Question[] {
   const questions: Question[] = [
     {
       kind: "choice",
       key: shardKey(shardIndex),
       instructions: CHOICE_INSTRUCTIONS,
-      options: optionsWithinBudget(shard, CHOICE_INSTRUCTIONS, descriptionBudgetChars),
+      options: optionsWithinBudget(shard, CHOICE_INSTRUCTIONS),
     },
   ];
   if (shardIndex === 0) {
@@ -258,10 +257,10 @@ function firstRoundQuestions(
 }
 
 /** Descriptions are cut so the whole question stays within QUESTION_BUDGET_CHARS. */
-function optionsWithinBudget(shard: SkillRecord[], instructions: string, cap: number | undefined): Record<string, string> {
+function optionsWithinBudget(shard: SkillRecord[], instructions: string): Record<string, string> {
   const idChars = shard.reduce((sum, s) => sum + s.id.length, 0);
   const remaining = Math.max(0, QUESTION_BUDGET_CHARS - instructions.length - idChars);
-  const perOption = Math.min(Math.floor(remaining / shard.length), cap ?? Number.POSITIVE_INFINITY);
+  const perOption = Math.floor(remaining / shard.length);
   return Object.fromEntries(shard.map((s) => [s.id, s.description.slice(0, perOption).trimEnd()]));
 }
 
@@ -339,15 +338,26 @@ function rankShard(key: string, answer: ChoiceAnswer, shard: SkillRecord[]): Ran
 }
 
 function byProbability(a: Ranked, b: Ranked): number {
-  return b.probability - a.probability || (a.skill.id < b.skill.id ? -1 : a.skill.id > b.skill.id ? 1 : 0);
+  return b.probability - a.probability || compareText(a.skill.id, b.skill.id);
 }
 
-function lexicalCandidates(lexical: LexicalRanker, task: string, skills: SkillRecord[], limit: number): FindResult["candidates"] {
+/** Joins a ranker's output with the records it names; unknown ids drop out, best first, up to `limit`. */
+function candidatesOf(
+  skills: readonly SkillRecord[],
+  ranked: readonly { id: SkillId; score: number }[],
+  limit: number,
+): FindResult["candidates"] {
   const byId = new Map(skills.map((s) => [s.id, s]));
-  return lexical.rank(task, skills, limit).flatMap(({ id, score }) => {
-    const skill = byId.get(id);
-    return skill ? [{ id, description: skill.description, score }] : [];
-  });
+  return ranked
+    .flatMap(({ id, score }) => {
+      const skill = byId.get(id);
+      return skill ? [{ id, description: skill.description, score }] : [];
+    })
+    .slice(0, limit);
+}
+
+function lexicalCandidates(lexical: LexicalRanker, task: string, skills: readonly SkillRecord[], limit: number): FindResult["candidates"] {
+  return candidatesOf(skills, lexical.rank(task, skills, limit), limit);
 }
 
 /** Runs `run` under a deadline. On timeout or parent abort, the signal passed to `run` is aborted too. */
@@ -377,25 +387,5 @@ async function withDeadline<T>(
   }
 }
 
-/**
- * Deduplicated skills per input array. The lexical ranker keys its index on the array it receives, so
- * the same catalog array must come back as the same array, or every `find` rebuilds the index.
- */
-const uniqueByInput = new WeakMap<readonly SkillRecord[], SkillRecord[]>();
-
-/** Keeps the first skill for each id, so option keys are unique. */
-function uniqueById(skills: readonly SkillRecord[]): SkillRecord[] {
-  const cached = uniqueByInput.get(skills);
-  if (cached) return cached;
-  const seen = new Set<string>();
-  const unique: SkillRecord[] = [];
-  for (const skill of skills) {
-    if (seen.has(skill.id)) continue;
-    seen.add(skill.id);
-    unique.push(skill);
-  }
-  uniqueByInput.set(skills, unique);
-  return unique;
-}
 
 

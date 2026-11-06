@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   COOKBOOK_DEFAULTS,
-  EvalError,
-  type EvalRequest,
   runModelRanker,
   sweepCachedRanker,
   summarize,
 } from "../../scripts/eval";
+import {
+  EvalError,
+  type EvalRequest,
+} from "../../scripts/eval-data";
 import type { Answer, DecisionModel, SkillRecord, Thresholds } from "../../src/types";
 import { type Script, scriptedModel, skill } from "../rank/helpers";
 

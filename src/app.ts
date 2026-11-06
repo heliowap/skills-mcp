@@ -15,7 +15,6 @@ import {
   type SyncOutcome,
   syncSources,
 } from "./sources/registry";
-import { SourceError } from "./sources/shared";
 import { sanitizeInline } from "./text";
 import { loadExpansions, loadTrainedRanker } from "./trained/artifact";
 import type { Catalog, Classifier, LexicalRanker, SkillRecord, SourceSpec, TrainedRanker } from "./types";
@@ -48,7 +47,7 @@ export interface App {
 }
 
 /** What ranks a task: the trained ranker when its artifacts are valid, and the lexical ranker always. */
-interface Ranking {
+export interface Ranking {
   trained?: TrainedRanker;
   lexical: LexicalRanker;
 }
@@ -145,7 +144,6 @@ export async function createApp(options: AppOptions = {}): Promise<App> {
         await addSource(spec);
         const [outcome] = await syncSources({ ids: [spec.id], adapters });
         await rebuild();
-        if (!outcome) throw new SourceError(`source ${spec.id} vanished during sync`);
         return outcome;
       }),
     sync: (ids) =>

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { EvalError, parseRequests, REQUESTS_PATH } from "../../scripts/eval";
+import {
+  EvalError,
+  parseRequests,
+  REQUESTS_PATH,
+} from "../../scripts/eval-data";
 
 const line = (fields: object) => JSON.stringify(fields);
 
