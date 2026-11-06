@@ -7,10 +7,9 @@ import { chmod, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { z } from "zod";
 import { BUILTIN_SKILL_IDS, PLUGIN_MCP_SERVER_IDS } from "../opencode-plugin/skills-cutover/server";
 import { messageOf } from "../src/text";
-import { runArgv } from "../src/sources/exec";
+import { OpenCodeApiError, readSkillListing, runOpenCodeApi } from "./opencode-api";
 
 /** The name the skills server gets under mcp.servers. */
 export const SKILLS_SERVER = "skills";
@@ -24,8 +23,6 @@ export const PLUGIN_DIR = join("opencode-plugin", "skills-cutover");
 const OFF_AFTER_CUTOVER = [...DISABLED_SERVERS, LEGACY_MCP_KEY, ...PLUGIN_MCP_SERVER_IDS];
 const BACKUP_SUFFIX = "before-skills-mcp";
 const REVERT_SUFFIX = "before-revert";
-const OPENCODE_TIMEOUT_MS = 60_000;
-const OPENCODE_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 /** Reads verify makes before it reports a failure, and the pause between them. */
 const VERIFY_ATTEMPTS = 3;
 const VERIFY_SETTLE_MS = 3_000;
@@ -607,18 +604,14 @@ async function newestBackup(config: string): Promise<string> {
   return backupPath(config, newest);
 }
 
-/** Runs the opencode CLI through the shared argv runner: no shell, a timeout and an abort signal. */
+/** Runs the opencode CLI through the shared OpenCode runner: no shell, a timeout and a byte cap. */
 async function runOpencode(bin: string, args: string[], env: Env): Promise<string> {
-  const defined = Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined));
-  const result = await runArgv([bin, ...args], {
-    env: defined as Record<string, string>,
-    timeoutMs: OPENCODE_TIMEOUT_MS,
-    maxStdoutBytes: OPENCODE_MAX_STDOUT_BYTES,
-  });
-  if (result.exitCode !== 0) {
-    throw new CutoverError(`${bin} ${args[0]} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 512)}`);
+  try {
+    return await runOpenCodeApi(args, { bin, env });
+  } catch (err) {
+    if (err instanceof OpenCodeApiError) throw new CutoverError(err.message);
+    throw err;
   }
-  return result.stdout;
 }
 
 // ---------------------------------------------------------------------------
@@ -668,16 +661,6 @@ async function revert(config: string, io: Io, now: () => Date): Promise<number> 
   return 0;
 }
 
-const SkillListing = z.object({
-  data: z.array(
-    z.object({
-      id: z.string(),
-      description: z.string().optional(),
-      autoinvoke: z.boolean().optional(),
-    }),
-  ),
-});
-
 /** Reads `opencode mcp list` lines (`<icon> <name>  <status>`) into a name → status map. */
 export function parseMcpList(text: string): Map<string, string> {
   const servers = new Map<string, string>();
@@ -690,9 +673,7 @@ export function parseMcpList(text: string): Map<string, string> {
 
 /** One read of OpenCode's state, as report lines and a count of failed checks. */
 async function verifyOnce(dir: string, bin: string, env: Env): Promise<{ lines: string[]; failures: number }> {
-  const listing = SkillListing.parse(
-    JSON.parse(await runOpencode(bin, ["api", "get", `/api/skill?location[directory]=${dir}`], env)),
-  );
+  const listing = await readSkillListing({ cwd: dir, bin, env });
   // OpenCode advertises a skill when it has a description and is not autoinvoke: false.
   const advertised = listing.data
     .filter((skill) => (skill.description ?? "").trim() !== "" && skill.autoinvoke !== false)

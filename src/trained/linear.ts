@@ -3,7 +3,7 @@
 import { NONE_CLASS } from "./dataset";
 import type { SparseVector } from "./features";
 
-const BATCH_SIZE = 32;
+const MINIBATCH = 32;
 
 /** Classes × (dims + 1) weights, row-major; the bias of each class is its last entry. */
 export interface LinearModel { classes: readonly string[]; dims: number; weights: Float32Array }
@@ -92,8 +92,8 @@ export function trainSoftmax(
       [order[i], order[j]] = [order[j], order[i]];
     }
 
-    for (let start = 0; start < order.length; start += BATCH_SIZE) {
-      const end = Math.min(start + BATCH_SIZE, order.length);
+    for (let start = 0; start < order.length; start += MINIBATCH) {
+      const end = Math.min(start + MINIBATCH, order.length);
       grad.fill(0);
       let total = 0;
 

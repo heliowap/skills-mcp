@@ -3,6 +3,11 @@
 /** Leaf directory name; ^[a-z0-9]+(-[a-z0-9]+)*$, 1–64 chars (agentskills.io spec). */
 export type SkillId = string;
 
+/** -1, 0 or 1: the order of two strings. The tie-break every ranking, chunk and report sort shares. */
+export function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** One skill as the catalog knows it. `description` is sanitized and at most 1024 chars. */
 export interface SkillRecord {
   id: SkillId; name: string; description: string;

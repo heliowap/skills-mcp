@@ -1,6 +1,6 @@
 // Validation rules and limits for untrusted skill content. Pure functions only.
 
-import { stripControls, stripTags } from "../text";
+import { stripAndCollapse, truncateUnits } from "../text";
 
 /** Maximum files in one skill directory (SKILL.md included). */
 export const MAX_FILES_PER_SKILL = 512;
@@ -36,16 +36,7 @@ export function isValidName(name: string): boolean {
  * whitespace is collapsed, and the result is capped at MAX_DESCRIPTION characters.
  */
 export function sanitizeDescription(raw: string): { text: string; truncated: boolean } {
-  const text = stripTags(stripControls(raw)).replace(/\s+/g, " ").trim();
+  const text = stripAndCollapse(raw);
   const truncated = text.length > MAX_DESCRIPTION;
   return { text: truncateUnits(text, MAX_DESCRIPTION), truncated };
-}
-
-/** The first `max` UTF-16 units of `text`, without ending on a lone surrogate. */
-export function truncateUnits(text: string, max: number): string {
-  if (text.length <= max) return text;
-  let cut = text.slice(0, max);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return cut.trimEnd();
 }

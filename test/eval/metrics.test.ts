@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { type EvalRequest, type Outcome, percentile, summarize } from "../../scripts/eval";
+import {
+  type Outcome,
+  percentile,
+  summarize,
+} from "../../scripts/eval";
+import {
+  type EvalRequest,
+} from "../../scripts/eval-data";
 
 const covered = (gold: string, id = `c-${gold}`): EvalRequest => ({ id, kind: "covered", text: "task", gold });
 const uncovered = (id = "u"): EvalRequest => ({ id, kind: "everyday", text: "task", gold: null });

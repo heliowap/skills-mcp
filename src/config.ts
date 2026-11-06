@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { ThresholdsSchema } from "./decision/providers";
 import type { SourceSpec } from "./types";
 import { configPath } from "./paths";
 import { messageOf } from "./text";
@@ -12,13 +13,6 @@ export class ConfigError extends Error {
     this.name = "ConfigError";
   }
 }
-
-/** Per-model thresholds; each defaults to the documented value. */
-export const ThresholdsSchema = z.object({
-  action: z.number().min(0).max(1).default(0.3),
-  named: z.number().min(0).max(1).default(0.5),
-  fits: z.number().min(0).max(1).default(0.3),
-});
 
 const SourceSpecSchema: z.ZodType<SourceSpec> = z.discriminatedUnion("kind", [
   z.object({

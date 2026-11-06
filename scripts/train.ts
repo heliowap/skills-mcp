@@ -11,13 +11,13 @@ import { createApp } from "../src/app";
 import { trainedDir } from "../src/paths";
 import { createBm25Ranker } from "../src/rank/bm25";
 import { type Expansions, type ManifestInput, writeTrainedArtifacts } from "../src/trained/artifact";
-import { type DatasetRow, DatasetRowSchema, leaksEval, NONE_CLASS } from "../src/trained/dataset";
+import { type DatasetRow, leaksEval, NONE_CLASS, parseDatasetRows, type ParsedDatasetRow } from "../src/trained/dataset";
 import { type FeatureSpec, fitVectorizer, type Vectorizer, vectorize } from "../src/trained/features";
 import { type LinearModel, trainSoftmax } from "../src/trained/linear";
 import { createTrainedRanker } from "../src/trained/ranker";
 import { messageOf } from "../src/text";
-import type { SkillRecord } from "../src/types";
-import { parseRequests, REQUESTS_PATH } from "./eval";
+import { compareText, type SkillRecord } from "../src/types";
+import { DATASET_FILENAME, readEvalTexts } from "./eval-data";
 
 export interface Io {
   out: (text: string) => void;
@@ -62,11 +62,6 @@ export const GRID: readonly GridPoint[] = (["word", "word+char"] as const).flatM
 
 /** The single setting `--quick` trains: the middle of the grid. */
 const QUICK_POINT: GridPoint = { features: "word+char", l2: 1e-4, noneWeight: 1, maxFeatures: 16384 };
-
-interface LineRow {
-  line: number;
-  row: DatasetRow;
-}
 
 /** A training or validation text. `skillId` is null for a negative. */
 interface Sample {
@@ -120,12 +115,8 @@ interface Choice {
   tally: Tally;
 }
 
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 function where(line: number, row: DatasetRow): string {
-  return `dataset.jsonl line ${line} (${row.skillId ?? "negative"}, ${row.source})`;
+  return `${DATASET_FILENAME} line ${line} (${row.skillId ?? "negative"}, ${row.source})`;
 }
 
 function specOf(point: GridPoint): FeatureSpec {
@@ -137,8 +128,8 @@ function specOf(point: GridPoint): FeatureSpec {
   };
 }
 
-async function readDataset(): Promise<{ text: string; lines: LineRow[] }> {
-  const path = join(trainedDir(), "dataset.jsonl");
+async function readDataset(): Promise<{ text: string; lines: ParsedDatasetRow[] }> {
+  const path = join(trainedDir(), DATASET_FILENAME);
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -148,21 +139,9 @@ async function readDataset(): Promise<{ text: string; lines: LineRow[] }> {
     }
     throw new TrainError(`cannot read ${path}: ${messageOf(err)}`);
   }
-  const lines: LineRow[] = [];
-  text.split("\n").forEach((raw, index) => {
-    if (raw.trim() === "") return;
-    const line = index + 1;
-    let json: unknown;
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      throw new TrainError(`dataset.jsonl line ${line} is not JSON`);
-    }
-    const parsed = DatasetRowSchema.safeParse(json);
-    if (!parsed.success) throw new TrainError(`dataset.jsonl line ${line} has an unexpected shape`);
-    lines.push({ line, row: parsed.data });
-  });
-  return { text, lines };
+  const { rows, issues } = parseDatasetRows(text, path);
+  if (issues.length > 0) throw new TrainError(issues.join("\n"));
+  return { text, lines: rows };
 }
 
 /**
@@ -176,7 +155,7 @@ async function prepare(): Promise<Prepared> {
   const { text, lines } = await readDataset();
   const kept = lines.filter(({ row }) => row.keep);
 
-  const evalTexts = parseRequests(await readFile(REQUESTS_PATH, "utf8")).map((request) => request.text);
+  const evalTexts = await readEvalTexts();
   const leaks = kept
     .filter(({ row }) => leaksEval(row.text, evalTexts))
     .map(({ line, row }) => `${where(line, row)}: leaks an eval request`);
@@ -300,12 +279,12 @@ function betterTally(a: Tally, b: Tally): boolean {
 }
 
 function bestThreshold(candidate: Candidate): Choice {
-  let best: Choice | undefined;
-  for (const threshold of THRESHOLDS) {
+  // THRESHOLDS is a fixed non-empty grid, so the first setting starts the search.
+  let best: Choice = { candidate, threshold: THRESHOLDS[0], tally: tallyAt(candidate.outcomes, THRESHOLDS[0]) };
+  for (const threshold of THRESHOLDS.slice(1)) {
     const tally = tallyAt(candidate.outcomes, threshold);
-    if (best === undefined || betterTally(tally, best.tally)) best = { candidate, threshold, tally };
+    if (betterTally(tally, best.tally)) best = { candidate, threshold, tally };
   }
-  if (best === undefined) throw new TrainError("the threshold sweep is empty");
   return best;
 }
 
@@ -345,10 +324,9 @@ export async function runTrain(options: RunOptions): Promise<number> {
   const candidates = points.map((point) => fitCandidate(point, prep));
   const elapsed = (performance.now() - started) / 1000;
 
-  let chosen: Choice | undefined;
   const grid: Choice[] = candidates.map(bestThreshold);
-  for (const choice of grid) if (chosen === undefined || betterTally(choice.tally, chosen.tally)) chosen = choice;
-  if (chosen === undefined) throw new TrainError("the grid is empty");
+  let chosen = grid[0];
+  for (const choice of grid.slice(1)) if (betterTally(choice.tally, chosen.tally)) chosen = choice;
 
   io.out(
     `grid: ${points.length} setting${points.length === 1 ? "" : "s"}; seed ${SEED}, epochs ${EPOCHS}, learningRate ${LEARNING_RATE}, minDf ${MIN_DF}; took ${elapsed.toFixed(1)} s`,

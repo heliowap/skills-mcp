@@ -1,4 +1,4 @@
-import type { LexicalRanker, SkillRecord } from "../types";
+import { compareText, type LexicalRanker, type SkillRecord } from "../types";
 
 export const BM25_K1 = 1.2;
 export const BM25_B = 0.75;
@@ -123,7 +123,7 @@ export function createBm25Ranker(options: Bm25Options = {}): LexicalRanker {
         if (score > 0) scored.push({ id: doc.id, score });
       }
 
-      scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      scored.sort((a, b) => b.score - a.score || compareText(a.id, b.id));
       return scored.slice(0, k);
     },
   };

@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { parseRequests, REQUESTS_PATH } from "../../scripts/eval";
+import {
+  parseRequests,
+  REQUESTS_PATH,
+} from "../../scripts/eval-data";
 import { type Io, main, runTeach, runTeacher } from "../../scripts/train-data";
 import { type Example, NEGATIVE_MIX } from "../../src/trained/dataset";
 import { skill } from "../rank/helpers";

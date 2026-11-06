@@ -7,7 +7,10 @@ import { createApp } from "../../src/app";
 import { loadTrainedRanker } from "../../src/trained/artifact";
 import { type DatasetRow, NONE_CLASS, splitOf } from "../../src/trained/dataset";
 import { type Io, main } from "../../scripts/train";
-import { parseRequests, REQUESTS_PATH } from "../../scripts/eval";
+import {
+  parseRequests,
+  REQUESTS_PATH,
+} from "../../scripts/eval-data";
 
 const FIXTURE_DATASET = join(import.meta.dir, "..", "fixtures", "trained", "train", "dataset.jsonl");
 const FIXTURE_SKILLS = join(import.meta.dir, "..", "fixtures", "trained", "skills");

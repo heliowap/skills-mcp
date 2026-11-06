@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { type FindResult, type Ranker, RANKERS, type SkillId } from "../types";
+import { compareText, type FindResult, type Ranker, RANKERS, type SkillId } from "../types";
 
 /** The class of "no skill applies" in the trained ranker's softmax. Every trained module imports it from here. */
 export const NONE_CLASS = "__none__";
@@ -330,8 +330,8 @@ export function chunkByFamily<T extends { id: SkillId }>(items: readonly T[], ke
     families.set(key, [...(families.get(key) ?? []), item]);
   }
   const units: T[][] = [];
-  for (const key of [...families.keys()].sort(byText)) {
-    const members = (families.get(key) ?? []).slice().sort((a, b) => byText(a.id, b.id));
+  for (const key of [...families.keys()].sort(compareText)) {
+    const members = (families.get(key) ?? []).slice().sort((a, b) => compareText(a.id, b.id));
     units.push(...splitBalanced(members, size));
   }
 
@@ -363,18 +363,23 @@ function splitBalanced<T>(members: T[], size: number): T[][] {
   return chunks;
 }
 
-function byText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 export interface ParsedLine {
   line: number;
   example: Example;
 }
 
-/** Reads JSONL examples. Each bad line becomes one issue that names the file and the line. */
-export function parseExamples(text: string, where: string): { rows: ParsedLine[]; issues: string[] } {
-  const rows: ParsedLine[] = [];
+export interface ParsedDatasetRow {
+  line: number;
+  row: DatasetRow;
+}
+
+/** One JSONL line split, shared by every row parser below: blank lines skipped, line numbers stable. */
+function parseJsonLines<T>(
+  text: string,
+  where: string,
+  parse: (json: unknown) => { ok: true; value: T } | { ok: false; issue: string },
+): { rows: { line: number; value: T }[]; issues: string[] } {
+  const rows: { line: number; value: T }[] = [];
   const issues: string[] = [];
   text.split("\n").forEach((raw, index) => {
     if (raw.trim() === "") return;
@@ -386,15 +391,36 @@ export function parseExamples(text: string, where: string): { rows: ParsedLine[]
       issues.push(`${where} line ${line}: not JSON`);
       return;
     }
-    const parsed = ExampleSchema.safeParse(json);
-    if (!parsed.success) {
-      const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
-      issues.push(`${where} line ${line}: ${details.join("; ")}`);
+    const parsed = parse(json);
+    if (!parsed.ok) {
+      issues.push(`${where} line ${line}: ${parsed.issue}`);
       return;
     }
-    rows.push({ line, example: parsed.data });
+    rows.push({ line, value: parsed.value });
   });
   return { rows, issues };
+}
+
+/** Reads dataset rows from JSONL. Each bad line becomes one issue that names the file and the line. */
+export function parseDatasetRows(text: string, where: string): { rows: ParsedDatasetRow[]; issues: string[] } {
+  const { rows, issues } = parseJsonLines(text, where, (json) => {
+    const parsed = DatasetRowSchema.safeParse(json);
+    return parsed.success
+      ? { ok: true as const, value: parsed.data }
+      : { ok: false as const, issue: "not a dataset row" };
+  });
+  return { rows: rows.map(({ line, value }) => ({ line, row: value })), issues };
+}
+
+/** Reads JSONL examples. Each bad line becomes one issue that names the file and the line. */
+export function parseExamples(text: string, where: string): { rows: ParsedLine[]; issues: string[] } {
+  const { rows, issues } = parseJsonLines(text, where, (json) => {
+    const parsed = ExampleSchema.safeParse(json);
+    if (parsed.success) return { ok: true as const, value: parsed.data };
+    const details = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    return { ok: false as const, issue: details.join("; ") };
+  });
+  return { rows: rows.map(({ line, value }) => ({ line, example: value })), issues };
 }
 
 export interface BatchCheckInput {
@@ -481,7 +507,7 @@ function negativeMixIssues(batch: PlanBatch, rows: readonly ParsedLine[]): strin
 export function sortRows(rows: readonly DatasetRow[]): DatasetRow[] {
   return rows
     .map((row) => ({ row, hash: createHash("sha256").update(row.text).digest("hex") }))
-    .sort((a, b) => byText(a.row.skillId ?? "~", b.row.skillId ?? "~") || byText(a.hash, b.hash))
+    .sort((a, b) => compareText(a.row.skillId ?? "~", b.row.skillId ?? "~") || compareText(a.hash, b.hash))
     .map(({ row }) => row);
 }
 

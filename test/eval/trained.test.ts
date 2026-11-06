@@ -9,7 +9,13 @@ import { writeTrainedArtifacts } from "../../src/trained/artifact";
 import { type FeatureSpec, fitVectorizer, vectorize } from "../../src/trained/features";
 import { trainSoftmax, type TrainOptions } from "../../src/trained/linear";
 import { type DatasetRow, makeRow, NO_TEACHER, NONE_CLASS } from "../../src/trained/dataset";
-import { EvalError, main, parseArgs } from "../../scripts/eval";
+import {
+  main,
+  parseArgs,
+} from "../../scripts/eval";
+import {
+  EvalError,
+} from "../../scripts/eval-data";
 
 const FIXTURE_SKILLS = join(import.meta.dir, "..", "fixtures", "trained", "skills");
 const SKILL_IDS = ["pdf", "setup-ci", "setup-db", "setup-env"];

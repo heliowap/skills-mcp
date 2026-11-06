@@ -23,6 +23,12 @@ const REPO_RE = new RegExp(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,${MAX_REPO_CHARS - 1}}
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const REF_RE = new RegExp(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,${MAX_REF_CHARS - 1}}$`);
 
+/**
+ * Longest `repo` value parseGithubRepo accepts: the full https form with an owner, a repository
+ * name and `.git`. Owned here so a new accepted form updates the bound with the parser.
+ */
+export const MAX_REPO_SPEC_CHARS = `${DEFAULT_BASE_URL}/`.length + MAX_OWNER_CHARS + 1 + MAX_REPO_CHARS + ".git".length;
+
 export interface GithubRepo {
   owner: string;
   repo: string;

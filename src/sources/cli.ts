@@ -1,6 +1,7 @@
 import { mkdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { messageOf, sanitizeInline } from "../text";
+import { SKILL_FILE } from "../skill/scan";
 import type { MaterializedSource, SourceAdapter, SourceSpec } from "../types";
 import { commandEnv, type RunResult, runArgv } from "./exec";
 import {
@@ -121,7 +122,7 @@ export function createCliAdapter(options: CliAdapterOptions = {}): SourceAdapter
             continue;
           }
           await mkdir(skillDir, { recursive: true });
-          await writeFile(join(skillDir, "SKILL.md"), body);
+          await writeFile(join(skillDir, SKILL_FILE), body);
 
           if (entry.references.length > maxReferences) {
             warnings.push(

@@ -164,16 +164,6 @@ describe("classifier sharding", () => {
       expect(size).toBeLessThanOrEqual(48_000);
     }
   });
-
-  test("descriptionBudgetChars caps each option's description", async () => {
-    const model = scriptedModel({ action: actionLow });
-
-    await classifierFor(model, decks, { descriptionBudgetChars: 10 }).find(deckRequest);
-
-    for (const option of Object.values(choicesOf(model.rounds[0]!)[0]!.options)) {
-      expect(option.length).toBeLessThanOrEqual(10);
-    }
-  });
 });
 
 describe("classifier fallbacks", () => {
