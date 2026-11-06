@@ -9,6 +9,7 @@ export interface SkillRecord {
   sourceId: string; root: string; // realpath of the skill directory
   relPath: string; revision: string | null; // e.g. git sha
   excerpt: string; // first 700 chars of body (rerank)
+  contentHash: string; // sha256 hex of the SKILL.md bytes
 }
 
 /** A configured skill source. Kinds: remote git repo, local directory, or CLI command. */
@@ -59,12 +60,19 @@ export interface DecisionModel {
 export interface Thresholds { action: number; named: number; fits: number } // per model, from config
 /** Lexical (BM25-style) ranker used as the first pass and as the fallback. */
 export interface LexicalRanker { rank(task: string, skills: readonly SkillRecord[], k: number): { id: SkillId; score: number }[] }
+/** A ranker learned from example tasks; unlike the lexical ranker it can say no skill applies. */
+export interface TrainedRanker {
+  readonly id: string; // "trained:<manifest sha256, 12 hex>"
+  rank(task: string, skills: readonly SkillRecord[], k: number): TrainedRanking;
+}
+/** What a trained ranker says about one task. */
+export interface TrainedRanking { needsSkill: boolean; suggestion: SkillId | null; candidates: { id: SkillId; score: number }[] }
 /** Outcome of `find`. `needsSkill: null` means unknown (lexical ranking only). */
 export interface FindResult {
   needsSkill: boolean | null;  // null = unknown (BM25 only)
   suggestion: SkillId | null;  // at most one
   candidates: { id: SkillId; description: string; score: number }[];
-  ranker: "model" | "bm25" | "bm25-fallback"; model?: string; reason?: string;
+  ranker: "model" | "bm25" | "bm25-fallback" | "trained" | "trained-fallback"; model?: string; reason?: string;
 }
 /** Finds the best skill for a task description. */
 export interface Classifier { find(task: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<FindResult> }

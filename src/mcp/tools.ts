@@ -41,7 +41,7 @@ const FindInput = z.object({
 const FindOutput = z.object({
   needsSkill: z.boolean().nullable(),
   suggestion: z.string().nullable(),
-  // "model", "bm25" or "bm25-fallback": a string, so the fixed cost stays low.
+  // "model", "bm25", "bm25-fallback", "trained" or "trained-fallback": a string, so the fixed cost stays low.
   ranker: z.string(),
   reason: z.string().optional(),
   candidates: z.array(z.object({ id: z.string(), description: z.string(), score: z.number() })),

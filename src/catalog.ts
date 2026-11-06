@@ -1,6 +1,7 @@
 // Builds the read-only Catalog from materialized sources: validate, fold vendored copies, resolve collisions.
 // Skill content is untrusted: it is parsed and read, never executed.
 
+import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { basename, relative, resolve, sep } from "node:path";
@@ -269,6 +270,8 @@ async function accept(
     relPath: directory.relPath,
     revision: source.revision,
     excerpt: stripControls(truncateUnits(parsed.body, MAX_EXCERPT)),
+    // Hashes the raw bytes, not the decoded text: the decoder drops a byte-order mark, and a staleness check must see that edit.
+    contentHash: createHash("sha256").update(text.bytes).digest("hex"),
   };
   const vendored = vendorParent(directory.relPath) !== undefined;
 
@@ -332,7 +335,7 @@ async function probeKind(base: string, relPath: string): Promise<ResourceKind> {
 }
 
 /** `unreadable` is a file that exists but cannot be read (permissions); `read` reports it as missing. */
-type TextRead = { ok: true; text: string } | { ok: false; error: ReadError | "unreadable" };
+type TextRead = { ok: true; text: string; bytes: Uint8Array } | { ok: false; error: ReadError | "unreadable" };
 
 /** Reads a text file under `base`, enforcing containment, a size cap, and UTF-8 without NUL bytes. */
 async function readText(base: string, relPath: string, limit: number): Promise<TextRead> {
@@ -356,7 +359,7 @@ async function readText(base: string, relPath: string, limit: number): Promise<T
   }
   if (bytes.includes(0)) return { ok: false, error: "binary" };
   try {
-    return { ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+    return { ok: true, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), bytes };
   } catch {
     return { ok: false, error: "binary" };
   }

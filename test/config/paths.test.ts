@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { cacheDir, configPath } from "../../src/paths";
+import { cacheDir, configPath, trainedDir } from "../../src/paths";
 
 let savedConfig: string | undefined;
 let savedCache: string | undefined;
@@ -35,5 +35,12 @@ describe("paths", () => {
 
     expect(configPath()).toBe("/tmp/x/config.json");
     expect(cacheDir()).toBe("/tmp/x/cache");
+  });
+
+  test("trainedDir is a trained directory under the cache, so tests isolate it with SKILLS_MCP_CACHE", () => {
+    expect(trainedDir()).toBe(join(homedir(), ".cache", "skills-mcp", "trained"));
+
+    process.env.SKILLS_MCP_CACHE = "/tmp/x/cache";
+    expect(trainedDir()).toBe(join("/tmp/x/cache", "trained"));
   });
 });

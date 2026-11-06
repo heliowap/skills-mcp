@@ -10,3 +10,8 @@ export function configPath(): string {
 export function cacheDir(): string {
   return process.env.SKILLS_MCP_CACHE ?? join(homedir(), ".cache", "skills-mcp");
 }
+
+/** Trained-ranker artifacts and private training data. Lives under the cache, never in the repo. */
+export function trainedDir(): string {
+  return join(cacheDir(), "trained");
+}
