@@ -8,7 +8,11 @@ const BATCH_SIZE = 32;
 
 /** Classes × (dims + 1) weights, row-major; the bias of each class is its last entry. */
 export interface LinearModel { classes: readonly string[]; dims: number; weights: Float32Array }
-/** `noneWeight` scales the loss of rows whose class is `__none__`; `l2` penalizes weights, not biases. */
+/**
+ * `noneWeight` scales the loss of rows whose class is `__none__`. `l2` penalizes weights, not biases,
+ * and one epoch shrinks them by `learningRate × l2` whatever the batch count, so the grid's values keep
+ * their meaning when the learning rate or the dataset size changes.
+ */
 export interface TrainOptions { l2: number; epochs: number; learningRate: number; seed: number; noneWeight: number }
 
 class LinearError extends Error {
@@ -78,6 +82,8 @@ export function trainSoftmax(
   const grad = new Float64Array(C * stride);
   const logits = new Float64Array(C);
   const rowWeight = classes.map((name) => (name === NONE_CLASS ? o.noneWeight : 1));
+  let totalWeight = 0;
+  for (const label of y) totalWeight += rowWeight[label];
   const random = mulberry32(o.seed);
   const order = Array.from({ length: x.length }, (_, i) => i);
 
@@ -111,11 +117,13 @@ export function trainSoftmax(
       // A batch whose rows all weigh zero (noneWeight 0) carries no signal to step on.
       if (total === 0) continue;
       const step = o.learningRate / total;
+      // This batch's share of the epoch's weight carries its share of the epoch's penalty.
+      const decay = o.learningRate * o.l2 * (total / totalWeight);
       for (let c = 0; c < C; c++) {
         const base = c * stride;
         for (let j = 0; j < stride; j++) {
-          const penalty = j === bias ? 0 : o.l2 * w[base + j];
-          w[base + j] -= step * grad[base + j] + o.learningRate * penalty;
+          const shrink = j === bias ? 0 : decay * w[base + j];
+          w[base + j] -= step * grad[base + j] + shrink;
         }
       }
     }

@@ -22,6 +22,50 @@ function options(overrides: Partial<TrainOptions> = {}): TrainOptions {
   return { l2: 1e-4, epochs: 200, learningRate: 0.5, seed: 1, noneWeight: 1, ...overrides };
 }
 
+/**
+ * Forty classes with four rows each and a larger __none__ class (200 rows). Each positive row has two
+ * signature features of its class and twelve features from a shared pool, so the class signal is
+ * weak per row, as in the trained ranker's real example tasks.
+ */
+function manyClassSet(): { x: SparseVector[]; y: Uint32Array; classes: string[]; dims: number; positives: number } {
+  const SKILLS = 40;
+  const POOL = 150;
+  const SIGNATURE = SKILLS * 3;
+  const dims = SIGNATURE + POOL;
+  const classes = [...Array.from({ length: SKILLS }, (_, k) => `skill-${k}`), "__none__"];
+  const x: SparseVector[] = [];
+  const labels: number[] = [];
+  const row = (features: number[]): SparseVector => {
+    const unique = [...new Set(features)].sort((a, b) => a - b);
+    const value = 1 / Math.sqrt(unique.length);
+    return { index: Uint32Array.from(unique), value: Float64Array.from(unique, () => value) };
+  };
+  for (let k = 0; k < SKILLS; k++) {
+    for (let i = 0; i < 4; i++) {
+      const signature = [3 * k + (i % 3), 3 * k + ((i + 1) % 3)];
+      const filler = Array.from({ length: 12 }, (_, j) => SIGNATURE + ((k * 13 + i * 29 + j * 7) % POOL));
+      x.push(row([...signature, ...filler]));
+      labels.push(k);
+    }
+  }
+  for (let n = 0; n < 200; n++) {
+    x.push(row(Array.from({ length: 14 }, (_, j) => SIGNATURE + ((n * 11 + j * 17 + 5) % POOL))));
+    labels.push(SKILLS);
+  }
+  return { x, y: Uint32Array.from(labels), classes, dims, positives: SKILLS * 4 };
+}
+
+function trainingAccuracy(model: ReturnType<typeof trainSoftmax>, x: readonly SparseVector[], y: Uint32Array, none: number) {
+  let correct = 0;
+  let positivesAsNone = 0;
+  x.forEach((row, i) => {
+    const top = argmax(predictProba(model, row));
+    if (top === y[i]) correct += 1;
+    if (y[i] !== none && top === none) positivesAsNone += 1;
+  });
+  return { accuracy: correct / x.length, positivesAsNone };
+}
+
 function argmax(p: Float64Array): number {
   let best = 0;
   for (let i = 1; i < p.length; i++) if (p[i] > p[best]) best = i;
@@ -40,6 +84,26 @@ describe("trainSoftmax", () => {
     const correct = x.filter((row, i) => argmax(predictProba(model, row)) === y[i]).length;
 
     expect(correct).toBe(x.length);
+  });
+
+  test("many classes with few rows each and a larger __none__ class reach 90% training accuracy", () => {
+    const { x, y, classes, dims, positives } = manyClassSet();
+    const none = classes.length - 1;
+
+    const model = trainSoftmax(x, y, classes, dims, options({ learningRate: 10, epochs: 20, l2: 1e-4 }));
+    const { accuracy, positivesAsNone } = trainingAccuracy(model, x, y, none);
+
+    expect(accuracy).toBeGreaterThanOrEqual(0.9);
+    expect(positivesAsNone).toBeLessThan(positives / 2);
+  });
+
+  test("the largest l2 in the grid does not wipe out what the same set learned", () => {
+    const { x, y, classes, dims } = manyClassSet();
+    const none = classes.length - 1;
+
+    const model = trainSoftmax(x, y, classes, dims, options({ learningRate: 10, epochs: 20, l2: 1e-3 }));
+
+    expect(trainingAccuracy(model, x, y, none).accuracy).toBeGreaterThanOrEqual(0.9);
   });
 
   test("weights are laid out classes × (dims + 1) with the bias last", () => {

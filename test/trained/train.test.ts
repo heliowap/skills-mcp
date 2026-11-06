@@ -214,3 +214,92 @@ describe("training run", () => {
     expect(s.err.join("\n")).toMatch(/usage/);
   });
 });
+
+/**
+ * Forty skills with five rows each (four train, one validation) and a larger __none__ class, the
+ * shape of the first real run. Each row is about fourteen words, of which two are the skill's
+ * signature and the rest come from a pool shared by all rows, so no single word identifies a skill.
+ * A model that learns too slowly for this shape ends up abstaining on every positive.
+ */
+async function writeManySkillDataset(): Promise<{ positives: number; negatives: number }> {
+  const SKILL_COUNT = 40;
+  const skillsDir = join(scratch, "many-skills");
+  const ids = Array.from({ length: SKILL_COUNT }, (_, k) => `skill-${String(k).padStart(2, "0")}`);
+  for (const [k, id] of ids.entries()) {
+    await mkdir(join(skillsDir, id), { recursive: true });
+    await writeFile(
+      join(skillsDir, id, "SKILL.md"),
+      `---\nname: ${id}\ndescription: Handle the ${id} workflow for topic ${k}.\n---\n\n# ${id}\n`,
+    );
+  }
+  await writeFile(
+    process.env.SKILLS_MCP_CONFIG!,
+    JSON.stringify({
+      sources: [{ kind: "local", id: "many", path: skillsDir }],
+      decision: { model: "typesafe-ai:jev-1.14.0" },
+    }),
+  );
+  const catalog = (await createApp()).catalog().all();
+  const hashOf = new Map(catalog.map((skill) => [skill.id, skill.contentHash]));
+
+  const pool = (n: number): string => `term${((n % 150) + 150) % 150}`;
+  const rows: DatasetRow[] = [];
+  let positives = 0;
+  let negatives = 0;
+  ids.forEach((id, k) => {
+    for (let i = 0; i < 5; i++) {
+      const signature = [0, 1].map((j) => `sig${k}x${(i + j) % 3}`);
+      const filler = Array.from({ length: 12 }, (_, j) => pool(k * 13 + i * 29 + j * 7));
+      const split = i === 4 ? "validation" : "train";
+      if (split === "validation") positives += 1;
+      rows.push({
+        skillId: id,
+        text: [...signature, ...filler].join(" "),
+        kind: "positive",
+        source: `T01/${k}-${i}`,
+        contentHash: hashOf.get(id)!,
+        split,
+        teacher: { suggestion: id, needsSkill: true, ranker: "model" },
+        keep: true,
+      });
+    }
+  });
+  for (let n = 0; n < 200; n++) {
+    const split = n % 4 === 3 ? "validation" : "train";
+    if (split === "validation") negatives += 1;
+    rows.push({
+      skillId: null,
+      text: Array.from({ length: 14 }, (_, j) => pool(n * 11 + j * 17 + 5)).join(" "),
+      kind: "negative",
+      source: `N01/${n}`,
+      contentHash: null,
+      split,
+      teacher: { suggestion: null, needsSkill: false, ranker: "model" },
+      keep: true,
+    });
+  }
+  await writeRows(rows);
+  return { positives, negatives };
+}
+
+describe("training run on a many-skill dataset", () => {
+  test("the trained ranker does not abstain on every validation positive", async () => {
+    const { positives } = await writeManySkillDataset();
+    const s = sink();
+
+    expect(await main(["--quick"], s.io)).toBe(0);
+    const manifest = await readManifest();
+
+    expect(manifest.validation.positives).toBe(positives);
+    expect(manifest.validation.wrong).toBeLessThan(positives);
+  });
+
+  test("the top-1 skill is the target for most validation positives", async () => {
+    const { positives } = await writeManySkillDataset();
+
+    expect(await main(["--quick"], sink().io)).toBe(0);
+    const manifest = await readManifest();
+
+    expect(manifest.validation.trainedTop1).toBeGreaterThanOrEqual(Math.ceil(positives / 2));
+  });
+});
