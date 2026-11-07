@@ -12,4 +12,4 @@ instructions, and every Markdown file.
 - Adding a dependency: [docs/coding-standards.md#dependencies](docs/coding-standards.md#dependencies).
 - Touching security-relevant code (skill files, paths, processes, keys, the HTTP entry point): [SECURITY.md](SECURITY.md).
 - Naming a domain concept in code, docs or tool text: [GLOSSARY.md](GLOSSARY.md). Add a term there when one is settled.
-- Making or recording a design decision: [docs/decisions.md](docs/decisions.md).
+- Making or recording a design decision: [docs/adr/](docs/adr/).
