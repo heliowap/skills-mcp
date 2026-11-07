@@ -347,6 +347,23 @@ describe("hostAllowlistFromEnv", () => {
       expect(() => hostAllowlistFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(/SKILLS_MCP_ALLOWED_HOSTS/);
     },
   );
+
+  test.each([`${TS_NET_HOST}:443`, "::1", "[::1]:8080", "[0:0:0:0:0:0:0:1]", "Skills.Example.ts.net"])(
+    "refuses %p, an entry the Host check could never match, and names it",
+    (entry) => {
+      const env = { SKILLS_MCP_ALLOWED_HOSTS: `127.0.0.1,${entry}` };
+      const listen = { hostname: "127.0.0.1", port: 0 };
+      expect(() => hostAllowlistFromEnv(listen, env)).toThrow(AccessError);
+      expect(() => hostAllowlistFromEnv(listen, env)).toThrow(entry);
+    },
+  );
+
+  test("accepts a bracketed IPv6 literal, as a Host header carries it", () => {
+    expect(hostAllowlistFromEnv({ hostname: "127.0.0.1", port: 0 }, { SKILLS_MCP_ALLOWED_HOSTS: "127.0.0.1,[::1]" })).toEqual([
+      "127.0.0.1",
+      "[::1]",
+    ]);
+  });
 });
 
 describe("listenFromEnv", () => {
