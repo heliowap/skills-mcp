@@ -194,7 +194,7 @@ SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 SKILLS_MCP_TOKEN_HASHES=mac:<sha
 
 - Every request needs a bearer token. `SKILLS_MCP_TOKEN_HASHES` is required: it holds one `origin:sha256-hex` pair per harness. The service refuses to start without it. How to generate a token and its hash, and how to revoke one, is in [SECURITY.md](SECURITY.md#http-entry-point).
 - `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
-- `SKILLS_MCP_ALLOWED_HOSTS` lists the other Host names the service accepts, comma-separated, such as a Tailscale MagicDNS name for a service that listens on loopback behind `tailscale serve`. Unset, it is the listen address alone. The same list governs the `Origin` check.
+- `SKILLS_MCP_ALLOWED_HOSTS` lists the other Host names the service accepts, comma-separated, such as a Tailscale MagicDNS name for a service that listens on loopback behind `tailscale serve`. `tailscale serve` and Funnel forward the MagicDNS name as the Host header (`<machine>.<tailnet>.ts.net`), so list that name, as observed on 2026-11-07 for both paths. Unset, it is the listen address alone. The same list governs the `Origin` check.
 - `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
 - Choose the listen address by the bind rule in [SECURITY.md](SECURITY.md#http-entry-point).
 
@@ -231,6 +231,15 @@ journalctl -u skills-mcp -f     # the stderr diagnostics
 - At boot, a private address such as a Tailscale one can appear after the service starts. The bind then fails with `cannot start: listen on <address>:<port>`, and `Restart=on-failure` retries every 5 seconds until the address exists.
 - The `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`, and the token hashes, `SKILLS_MCP_TOKEN_HASHES=...`. It holds hashes, never tokens. Make it readable only by `<user>`: `sudo chown <user>: <file> && sudo chmod 600 <file>`. The file is required, because the service refuses to start without its token hashes. A missing or misnamed file therefore stops the service with `cannot start`, which names the variable. A missing decision-model key alone is not an error: the server then starts without a decision model and `find` ranks without it.
 
+To publish a service that listens on loopback, put it on the tailnet with `tailscale serve`, and on the internet with Funnel, which uses the same target:
+
+```sh
+sudo tailscale serve --bg --https=443 http://127.0.0.1:7337
+sudo tailscale funnel --bg --https=443 http://127.0.0.1:7337
+```
+
+Both commands persist across reboots. The harness URL is then `https://<machine>.<tailnet>.ts.net/mcp`, and `SKILLS_MCP_ALLOWED_HOSTS` names that same `<machine>.<tailnet>.ts.net` host.
+
 ## Connect a harness
 
 Replace `<repo>` with the absolute path of your checkout.
@@ -252,7 +261,7 @@ Replace `<repo>` with the absolute path of your checkout.
 
 Code Mode then exposes `tools.skills.find`, `tools.skills.load`, `tools.skills.read` and `tools.skills.sources`. The server's instructions tell the agent to call `find` first.
 
-To use a server running as a service, point OpenCode at its URL instead. The server has no OAuth, so turn OAuth off. Each harness sends its own token, read from its environment variable `SKILLS_MCP_TOKEN` rather than written into the config file. The token is given to one harness only; see [SECURITY.md](SECURITY.md#http-entry-point):
+To use a server running as a service, point OpenCode at its URL instead. Behind `tailscale serve` or Funnel the URL is `https://<machine>.<tailnet>.ts.net/mcp`. The server has no OAuth, so turn OAuth off. Each harness sends its own token, read from its environment variable `SKILLS_MCP_TOKEN` rather than written into the config file. The token is given to one harness only; see [SECURITY.md](SECURITY.md#http-entry-point):
 
 ```jsonc
 {
