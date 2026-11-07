@@ -282,7 +282,7 @@ To use a server running as a service, point OpenCode at its URL instead. Behind 
 }
 ```
 
-On the Mac, read the token from a file. OpenCode's background service does not inherit the shell environment, so `{env:SKILLS_MCP_TOKEN}` would expand to an empty string there. Write the token, with no trailing newline, to a file that only your user can read. `$TOKEN` is the token from [SECURITY.md](SECURITY.md#http-entry-point):
+On the Mac, read the token from a file. OpenCode's background service keeps the environment it started with, so a variable exported later in your shell is missing there and `{env:SKILLS_MCP_TOKEN}` expands to an empty string. Write the token, with no trailing newline, to a file that only your user can read. `$TOKEN` is the token from [SECURITY.md](SECURITY.md#http-entry-point):
 
 ```sh
 mkdir -p ~/.config/skills-mcp
