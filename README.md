@@ -162,7 +162,7 @@ To add or remove local and command sources, use the [admin CLI](#admin-cli). The
 
 **Requirements**
 
-- **Bun 1.4.4**, the version pinned in `package.json` (`packageManager` and `engines.bun`). The project uses Bun APIs (`Bun.spawn`, `Bun.YAML`). Every machine that runs it, such as your Mac and the server, must install exactly this version.
+- **Bun**, the exact version pinned in `package.json` (`packageManager` and `engines.bun`). The project uses Bun APIs (`Bun.spawn`, `Bun.YAML`). Every machine that runs it, such as your Mac and the server, must install exactly this version.
 - **git 2.49 or newer** on your `PATH`, for GitHub sources (`git clone --revision`).
 - **A decision-model key**, optional. Without one, `find` still works and ranks lexically. See [Decision models](#decision-models).
 - **The `opencode` CLI**, only for `bun run coverage` and `bun run cutover verify`.
@@ -194,7 +194,7 @@ SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 bun src/http.ts
 
 - `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. Harnesses must use the address itself in the URL: a name that resolves to it, such as a Tailscale MagicDNS name, is refused too. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
 - `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
-- Bind it to loopback or a private network address, such as a Tailscale address, and never to a public one. Its exposure is described in [SECURITY.md](SECURITY.md#http-service).
+- Choose the listen address by the bind rule in [SECURITY.md](SECURITY.md#http-entry-point).
 
 A systemd unit that runs it as a user, restarts it after a crash and starts it at boot:
 
@@ -506,14 +506,14 @@ Read these before changing code:
 
 - [AGENTS.md](AGENTS.md): English for every file, and the glossary terms.
 - [docs/coding-standards.md](docs/coding-standards.md): module boundaries, the MCP surface, dependencies and TypeScript style.
-- [SECURITY.md](SECURITY.md): trusted sources, untrusted content, keys and the HTTP service.
+- [SECURITY.md](SECURITY.md): trusted sources, untrusted content, keys and the HTTP entry point.
 - [GLOSSARY.md](GLOSSARY.md): the domain terms.
 
 **Tests stay offline** by the rules in [docs/coding-standards.md](docs/coding-standards.md#tests). Live tests run only when their credentials are set: `test/decision/live.test.ts` needs a TypeSafe key, and the command-source live test needs `SKILLS_MCP_LIVE_CLI`.
 
 ## Security and privacy
 
-Security is documented in [SECURITY.md](SECURITY.md): the threat model, trusted and untrusted sources, key handling, what leaves your machine, the HTTP service, how to report a vulnerability, and how security updates arrive.
+Security is documented in [SECURITY.md](SECURITY.md): the threat model, trusted and untrusted sources, key handling, what leaves your machine, the HTTP entry point, how to report a vulnerability, and how security updates arrive.
 
 ## Limitations and known issues
 
