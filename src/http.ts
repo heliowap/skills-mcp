@@ -123,7 +123,25 @@ export function hostAllowlistFromEnv(listen: Listen, env: Record<string, string 
   if (hosts.some((host) => host === "" || /\s|\//.test(host))) {
     throw new AccessError(`${HOST_ALLOWLIST_ENV} must be comma-separated host names, with no empty entry`);
   }
+  const unmatchable = hosts.find((host) => hostnameAsChecked(host) !== host);
+  if (unmatchable !== undefined) {
+    throw new AccessError(
+      `${HOST_ALLOWLIST_ENV} entry "${unmatchable}" can never match: list a lowercase host name with no port, or a canonical IPv6 literal in brackets`,
+    );
+  }
   return hosts;
+}
+
+/**
+ * The hostname the Host and Origin checks compare against the allowlist: parsed by URL, which drops
+ * the port, lowercases the name and rewrites an IPv6 literal in canonical form. Undefined when unparseable.
+ */
+function hostnameAsChecked(host: string): string | undefined {
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The bearer token in an `Authorization: Bearer <token>` header, or undefined for any other header. */
