@@ -173,8 +173,16 @@ The long-lived systemd process that runs the HTTP entry point.
 _Avoid_: Daemon, unit, deployment
 
 **Listen address**:
-The address the HTTP entry point binds to, set by `SKILLS_MCP_HOST`; requests must name that address in their `Host` header.
+The address the HTTP entry point binds to, set by `SKILLS_MCP_HOST`; requests must name that address in their `Host` header, or another name in the Host allowlist.
 _Avoid_: Bind address, IP, host
+
+**Origin**:
+One harness that calls the HTTP entry point, identified by its name in `SKILLS_MCP_TOKEN_HASHES` and holding its own bearer token. Not the browser `Origin` header.
+_Avoid_: Client, caller, user
+
+**Bearer token**:
+The secret a harness sends as `Authorization: Bearer <token>`; the service keeps only its SHA-256 hash.
+_Avoid_: API key, password, secret
 
 ## Records
 

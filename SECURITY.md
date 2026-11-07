@@ -5,7 +5,7 @@ This file is the single source of truth for security in this repository. Other d
 ## Threat model
 
 - **Adversary:** the author of a skill, of a GitHub repository, or of a command source's output. Their text reaches the agent's context.
-- **Adversary:** anyone who can reach the listen address of the [HTTP entry point](#http-entry-point).
+- **Adversary:** anyone who can reach the listen address of the [HTTP entry point](#http-entry-point), or the published Funnel address once it exists, without a valid bearer token.
 - **Assets:** the user's files and machine, the decision-model API keys, and what the agent does with the text it receives.
 - **Boundary:** the server never runs a skill file. It runs only the git and command programs that a source spec declares.
 
@@ -44,12 +44,27 @@ This file is the single source of truth for security in this repository. Other d
 
 The [HTTP entry point](README.md#install-and-run) (`src/http.ts`) is the only network surface.
 
-- It has no authentication. Anyone who can reach its listen address can call every tool, including `sources add`, `sync` and `remove` for GitHub sources.
-- Requests whose `Host` header, or browser `Origin`, names a host other than the listen address are refused. This blocks DNS rebinding.
-- Traffic is plain HTTP. Encryption relies on the private network, such as Tailscale.
+- **Tokens.** Every request must carry `Authorization: Bearer <token>`. Each harness, called an origin, has its own token, so one can be revoked without touching the others. Every valid token has full access to all four tools, with no scopes.
+- **Stored hashes only.** `SKILLS_MCP_TOKEN_HASHES` holds comma-separated `origin:sha256-hex` pairs, where the hash is the SHA-256 of the token string. The server never stores a token. The variable is read at startup from the environment, never from the config file.
+- **Origin names** follow the source-id pattern: lowercase letters, digits and single hyphens, at most 64 characters. Each origin appears once.
+- **Refuses to start** when `SKILLS_MCP_TOKEN_HASHES` is unset, empty, malformed or lists an origin twice. The error names the variable and, where it can, the origin. It never shows a hash or a token, because either may have been pasted in the wrong place.
+- **Failures.** A missing header, a scheme other than `Bearer`, a malformed header, and an unknown or revoked token all get `401` with `WWW-Authenticate: Bearer`. The body is a JSON-RPC error and never repeats the header.
+- **Comparison.** The server hashes the presented token with SHA-256 and compares it, in constant time, with every configured hash.
+- **Host and Origin.** `SKILLS_MCP_ALLOWED_HOSTS` lists the Host names the service accepts, comma-separated. Unset, it is the listen address. The same list governs the browser `Origin` check. A request whose `Host` or `Origin` names any other host is refused with `403`. That check blocks DNS rebinding. It runs before the token check, so a bad host never reaches token checks.
+- **Check order** for each request: path (`404` unless `/mcp`), then Host and Origin (`403`), then the bearer token (`401`), then MCP handling.
+- **Logs.** An authenticated request writes one stderr line, `skills-mcp: origin=<origin> method=<JSON-RPC method>`. No token, hash or `Authorization` value is ever written to stderr, logs, errors or tool output.
+- **Generating a token.** Make 32 random bytes and hex-encode them, which gives the token. Then take the SHA-256 of that token string, which gives the hash:
+
+  ```sh
+  TOKEN=$(openssl rand -hex 32)
+  HASH=$(printf '%s' "$TOKEN" | shasum -a 256 | cut -d' ' -f1)
+  ```
+
+  Add `<origin>:$HASH` to `SKILLS_MCP_TOKEN_HASHES` in the service's environment file and give `$TOKEN` only to that harness, as `SKILLS_MCP_TOKEN`. Restart the service.
+- **Revoking an origin.** Remove its pair from `SKILLS_MCP_TOKEN_HASHES` and restart the service. There is no hot reload, and no code change is needed.
+- **Traffic is plain HTTP.** Encryption relies on the private network, such as Tailscale, or on HTTPS terminated by `tailscale serve`/Funnel.
 - Bind only to loopback or to a private network address that you control. Never bind to a public address.
-- Do not enable Tailscale Funnel until bearer tokens and a configurable Host allowlist exist. The accepted design is [ADR-0018](docs/adr/0018-serve-cloud-agents-through-tailscale-funnel.md).
-- Changes to the exposure are recorded in [docs/adr/](docs/adr/).
+- Changes to the exposure are recorded in [docs/adr/](docs/adr/). The accepted design is [ADR-0018](docs/adr/0018-serve-cloud-agents-through-tailscale-funnel.md).
 
 ## Reporting a vulnerability
 
