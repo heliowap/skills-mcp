@@ -6,9 +6,15 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Moves only with the Bun upgrade process: docs/coding-standards.md#dependencies.
+    # Blocks version updates of @types/bun, which move only with the Bun upgrade
+    # (docs/coding-standards.md#dependencies). Listing every version update type leaves security updates
+    # open: a security PR fails test/pins.test.ts until the upgrade is done (ADR-0021).
     ignore:
       - dependency-name: "@types/bun"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
     groups:
       minor-and-patch:
         applies-to: version-updates
