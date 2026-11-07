@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/server";
 import { rm } from "node:fs/promises";
+import { z } from "zod";
 import { type App, createApp } from "../../src/app";
 import {
   AccessError,
-  allowedHostsFromEnv,
   DEFAULT_HOST,
   DEFAULT_PORT,
   type HttpAccess,
+  hostAllowlistFromEnv,
   ListenError,
   listenFromEnv,
   MCP_PATH,
@@ -18,20 +19,31 @@ import {
   CHILD_TIMEOUT_MS,
   childEnv,
   makeSandbox,
+  parseLine,
   REPO_ROOT,
-  type RpcError,
   type Sandbox,
-  type ToolResult,
   useSandbox,
 } from "./helpers";
 
-interface RpcReply<T> {
-  result?: T;
-  error?: RpcError;
-}
+/** The JSON-RPC envelope of a reply. `result` is checked by the schema of the call that made it. */
+const ReplySchema = z.object({
+  result: z.unknown().optional(),
+  error: z.object({ code: z.number(), message: z.string() }).optional(),
+});
+
+/** The `initialize` result: the server names itself. */
+const InitializeResult = z.object({ serverInfo: z.object({ name: z.string() }) });
+
+/** The `tools/call` result of `find`: the structured content names the ranker and the candidates. */
+const FindResult = z.object({
+  structuredContent: z.object({
+    ranker: z.string(),
+    candidates: z.array(z.object({ id: z.string() })),
+  }),
+});
 
 /** Posts one JSON-RPC request the way a stateless streamable HTTP harness does; reads a JSON or SSE answer. */
-async function rpc<T>(url: string, method: string, params: unknown = {}, headers: Record<string, string> = {}) {
+async function rpc(url: string, method: string, params: unknown = {}, headers: Record<string, string> = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
@@ -45,7 +57,8 @@ async function rpc<T>(url: string, method: string, params: unknown = {}, headers
         .map((line) => line.slice("data:".length).trim())
         .join("")
     : text;
-  return { status: response.status, headers: response.headers, body: text, reply: (json ? JSON.parse(json) : {}) as RpcReply<T> };
+  // The body is external data: parse it, then validate the envelope before any field is read.
+  return { status: response.status, headers: response.headers, body: text, reply: ReplySchema.parse(json ? parseLine(json) : {}) };
 }
 
 const INITIALIZE = {
@@ -77,11 +90,11 @@ function thrownMessage(action: () => unknown): string {
 }
 
 /** The access settings a service started with these variables would have; the listener is 127.0.0.1. */
-function accessFor(tokenHashes: string = TOKEN_HASHES, allowedHosts?: string): HttpAccess {
-  const hostEnv = allowedHosts === undefined ? {} : { SKILLS_MCP_ALLOWED_HOSTS: allowedHosts };
+function accessFor(tokenHashes: string = TOKEN_HASHES, hostAllowlist?: string): HttpAccess {
+  const hostEnv = hostAllowlist === undefined ? {} : { SKILLS_MCP_ALLOWED_HOSTS: hostAllowlist };
   return {
-    tokens: tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: tokenHashes }),
-    allowedHosts: allowedHostsFromEnv({ hostname: DEFAULT_HOST, port: 0 }, hostEnv),
+    tokenHashes: tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: tokenHashes }),
+    hostAllowlist: hostAllowlistFromEnv({ hostname: DEFAULT_HOST, port: 0 }, hostEnv),
   };
 }
 
@@ -123,17 +136,17 @@ describe("HTTP server: serveHttp over one app", () => {
   test("initialize over POST /mcp with a valid token names the server", async () => {
     const url = await start();
 
-    const { status, reply } = await rpc<{ serverInfo: { name: string } }>(url, "initialize", INITIALIZE, MAC_AUTH);
+    const { status, reply } = await rpc(url, "initialize", INITIALIZE, MAC_AUTH);
 
     expect(status).toBe(200);
-    expect(reply.result?.serverInfo.name).toBe("skills");
+    expect(InitializeResult.parse(reply.result).serverInfo.name).toBe("skills");
   });
 
   test("find over POST /mcp ranks the pdf skill first, with the lexical ranker", async () => {
     const url = await start();
 
-    const { reply } = await rpc<ToolResult>(url, "tools/call", { name: "find", arguments: { task: "fill in PDF forms" } }, MAC_AUTH);
-    const found = reply.result?.structuredContent as { ranker: string; candidates: { id: string }[] };
+    const { reply } = await rpc(url, "tools/call", { name: "find", arguments: { task: "fill in PDF forms" } }, MAC_AUTH);
+    const found = FindResult.parse(reply.result).structuredContent;
 
     expect(found.ranker).toBe("bm25");
     expect(found.candidates[0]?.id).toBe("pdf");
@@ -175,10 +188,10 @@ describe("HTTP server: serveHttp over one app", () => {
   test("a Host header named in the allowlist is served, while the listen address stays allowed", async () => {
     const url = await start(undefined, accessFor(TOKEN_HASHES, `127.0.0.1,${TS_NET_HOST}`));
 
-    const named = await rpc<{ serverInfo: { name: string } }>(url, "initialize", INITIALIZE, { ...MAC_AUTH, host: TS_NET_HOST });
+    const named = await rpc(url, "initialize", INITIALIZE, { ...MAC_AUTH, host: TS_NET_HOST });
 
     expect(named.status).toBe(200);
-    expect(named.reply.result?.serverInfo.name).toBe("skills");
+    expect(InitializeResult.parse(named.reply.result).serverInfo.name).toBe("skills");
   });
 
   test("a browser Origin named in the allowlist is served", async () => {
@@ -271,8 +284,8 @@ describe("HTTP server: bearer tokens", () => {
   test("each configured origin's token is served", async () => {
     const url = await start(accessFor());
 
-    const cursor = await rpc<{ serverInfo: { name: string } }>(url, "initialize", INITIALIZE, CURSOR_AUTH);
-    const mac = await rpc<{ serverInfo: { name: string } }>(url, "initialize", INITIALIZE, MAC_AUTH);
+    const cursor = await rpc(url, "initialize", INITIALIZE, CURSOR_AUTH);
+    const mac = await rpc(url, "initialize", INITIALIZE, MAC_AUTH);
 
     expect(cursor.status).toBe(200);
     expect(mac.status).toBe(200);
@@ -310,17 +323,17 @@ describe("tokenHashesFromEnv", () => {
   });
 });
 
-describe("allowedHostsFromEnv", () => {
+describe("hostAllowlistFromEnv", () => {
   test("defaults to the listen address", () => {
-    expect(allowedHostsFromEnv({ hostname: "127.0.0.1", port: 0 }, {})).toEqual(["127.0.0.1"]);
+    expect(hostAllowlistFromEnv({ hostname: "127.0.0.1", port: 0 }, {})).toEqual(["127.0.0.1"]);
   });
 
   test("brackets an IPv6 listen address by default, as a Host header carries it", () => {
-    expect(allowedHostsFromEnv({ hostname: "::1", port: 0 }, {})).toEqual(["[::1]"]);
+    expect(hostAllowlistFromEnv({ hostname: "::1", port: 0 }, {})).toEqual(["[::1]"]);
   });
 
   test("reads comma-separated names from SKILLS_MCP_ALLOWED_HOSTS", () => {
-    expect(allowedHostsFromEnv({ hostname: "127.0.0.1", port: 0 }, { SKILLS_MCP_ALLOWED_HOSTS: `127.0.0.1, ${TS_NET_HOST}` })).toEqual([
+    expect(hostAllowlistFromEnv({ hostname: "127.0.0.1", port: 0 }, { SKILLS_MCP_ALLOWED_HOSTS: `127.0.0.1, ${TS_NET_HOST}` })).toEqual([
       "127.0.0.1",
       TS_NET_HOST,
     ]);
@@ -330,8 +343,8 @@ describe("allowedHostsFromEnv", () => {
     "refuses the malformed list %p and names the variable",
     (list) => {
       const listen = { hostname: "127.0.0.1", port: 0 };
-      expect(() => allowedHostsFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(AccessError);
-      expect(() => allowedHostsFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(/SKILLS_MCP_ALLOWED_HOSTS/);
+      expect(() => hostAllowlistFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(AccessError);
+      expect(() => hostAllowlistFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(/SKILLS_MCP_ALLOWED_HOSTS/);
     },
   );
 });
@@ -385,9 +398,9 @@ describe("HTTP entry point: spawned as a service manager would run it", () => {
       expect(url).toBeDefined();
       expect(url?.endsWith(MCP_PATH)).toBe(true);
 
-      const { reply } = await rpc<{ serverInfo: { name: string } }>(url ?? "", "initialize", INITIALIZE, MAC_AUTH);
+      const { reply } = await rpc(url ?? "", "initialize", INITIALIZE, MAC_AUTH);
 
-      expect(reply.result?.serverInfo.name).toBe("skills");
+      expect(InitializeResult.parse(reply.result).serverInfo.name).toBe("skills");
     } finally {
       child.kill();
       await child.exited;

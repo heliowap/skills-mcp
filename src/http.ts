@@ -18,11 +18,11 @@ export const MAX_PORT = 65535;
 /** Comma-separated `origin:sha256-hex` pairs, one per harness. */
 export const TOKEN_HASHES_ENV = "SKILLS_MCP_TOKEN_HASHES";
 /** Comma-separated Host names the entry point accepts; unset means the listen address. */
-export const ALLOWED_HOSTS_ENV = "SKILLS_MCP_ALLOWED_HOSTS";
+export const HOST_ALLOWLIST_ENV = "SKILLS_MCP_ALLOWED_HOSTS";
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
 /** Longest JSON-RPC method name written to stderr. */
-const MAX_LOGGED_METHOD_CHARS = 100;
+export const MAX_LOGGED_METHOD_CHARS = 100;
 /** A method is logged only in this shape, so a hostile one cannot forge a log line. */
 const LOGGABLE_METHOD = new RegExp(`^[A-Za-z0-9_./-]{1,${MAX_LOGGED_METHOD_CHARS}}$`);
 
@@ -56,8 +56,8 @@ export interface TokenHash {
 
 /** What the entry point checks on each request, besides the listen address. */
 export interface HttpAccess {
-  tokens: TokenHash[];
-  allowedHosts: string[];
+  tokenHashes: TokenHash[];
+  hostAllowlist: string[];
 }
 
 /** Reads `SKILLS_MCP_HOST` and `SKILLS_MCP_PORT`; both default to a loopback listener. */
@@ -116,12 +116,12 @@ export function tokenHashesFromEnv(env: Record<string, string | undefined> = pro
  * Reads `SKILLS_MCP_ALLOWED_HOSTS`, the Host names for both the Host and the Origin checks. Unset, it
  * is the listen address, bracketed when it is IPv6, as a Host header carries it.
  */
-export function allowedHostsFromEnv(listen: Listen, env: Record<string, string | undefined> = process.env): string[] {
-  const raw = env[ALLOWED_HOSTS_ENV];
+export function hostAllowlistFromEnv(listen: Listen, env: Record<string, string | undefined> = process.env): string[] {
+  const raw = env[HOST_ALLOWLIST_ENV];
   if (raw === undefined) return [listen.hostname.includes(":") ? `[${listen.hostname}]` : listen.hostname];
   const hosts = raw.split(",").map((host) => host.trim());
   if (hosts.some((host) => host === "" || /\s|\//.test(host))) {
-    throw new AccessError(`${ALLOWED_HOSTS_ENV} must be comma-separated host names, with no empty entry`);
+    throw new AccessError(`${HOST_ALLOWLIST_ENV} must be comma-separated host names, with no empty entry`);
   }
   return hosts;
 }
@@ -132,15 +132,16 @@ function bearerToken(header: string | null): string | undefined {
 }
 
 /**
- * The configured origin whose hash matches the presented token, or undefined. Every hash is compared
- * in constant time, and the loop never stops early: an early exit would reveal how close a guess came.
+ * The configured entry whose digest matches the SHA-256 of the presented token, or undefined. Every
+ * digest is compared in constant time, and the loop never stops early: an early exit would reveal how
+ * close a guess came.
  */
-function originOf(presented: string | undefined, tokens: TokenHash[]): TokenHash | undefined {
+function tokenHashFor(presented: string | undefined, tokenHashes: TokenHash[]): TokenHash | undefined {
   if (presented === undefined) return undefined;
   const digest = createHash("sha256").update(presented).digest();
   let matched: TokenHash | undefined;
-  for (const token of tokens) {
-    if (timingSafeEqual(digest, token.digest) && matched === undefined) matched = token;
+  for (const entry of tokenHashes) {
+    if (timingSafeEqual(digest, entry.digest) && matched === undefined) matched = entry;
   }
   return matched;
 }
@@ -180,13 +181,14 @@ export function serveHttp(app: App, listen: Listen, access: HttpAccess) {
     async fetch(request) {
       if (new URL(request.url).pathname !== MCP_PATH) return new Response("Not found", { status: 404 });
       const refused =
-        hostHeaderValidationResponse(request, access.allowedHosts) ??
-        originValidationResponse(request, access.allowedHosts);
+        hostHeaderValidationResponse(request, access.hostAllowlist) ??
+        originValidationResponse(request, access.hostAllowlist);
       if (refused) return refused;
-      const matched = originOf(bearerToken(request.headers.get("authorization")), access.tokens);
+      const matched = tokenHashFor(bearerToken(request.headers.get("authorization")), access.tokenHashes);
       if (matched === undefined) return unauthorized();
       process.stderr.write(`skills-mcp: origin=${matched.origin} method=${await methodOf(request)}\n`);
-      // authInfo carries the token's digest, never the token itself, so no handler can echo it.
+      // The SDK names this field `token`, but it holds the token's SHA-256 digest, never the token,
+      // so no handler can echo the token.
       return handler.fetch(request, {
         authInfo: { token: matched.digest.toString("hex"), clientId: matched.origin, scopes: [] },
       });
@@ -200,7 +202,7 @@ if (import.meta.main) {
   let access: HttpAccess;
   try {
     listen = listenFromEnv();
-    access = { tokens: tokenHashesFromEnv(), allowedHosts: allowedHostsFromEnv(listen) };
+    access = { tokenHashes: tokenHashesFromEnv(), hostAllowlist: hostAllowlistFromEnv(listen) };
     app = await createApp();
   } catch (err) {
     process.stderr.write(`skills-mcp: cannot start: ${messageOf(err)}\n`);
