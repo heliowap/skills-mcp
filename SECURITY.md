@@ -5,7 +5,7 @@ This file is the single source of truth for security in this repository. Other d
 ## Threat model
 
 - **Adversary:** the author of a skill, of a GitHub repository, or of a command source's output. Their text reaches the agent's context.
-- **Adversary:** anyone who can reach the listen address of the [HTTP service](#http-service).
+- **Adversary:** anyone who can reach the listen address of the [HTTP entry point](#http-entry-point).
 - **Assets:** the user's files and machine, the decision-model API keys, and what the agent does with the text it receives.
 - **Boundary:** the server never runs a skill file. It runs only the git and command programs that a source spec declares.
 
@@ -22,7 +22,7 @@ This file is the single source of truth for security in this repository. Other d
 - Command sources get an allowlisted environment: `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`, `USER` and `SHELL`. API keys are not passed to them.
 - Git runs with `GIT_TERMINAL_PROMPT=0` and without the repository override variables. Git otherwise inherits the server's environment, so API keys are visible to git. Git does not use them.
 - Every path is resolved with `realpath` and must stay inside its skill directory before it is read. The one exception is the top-level symlinks of a trusted local source.
-- Names and descriptions shown to the agent are validated and sanitized: control characters and XML-like tags are removed, and length is capped.
+- Sanitize every skill id, name and description before it reaches agent-visible text (tool output, server instructions, suggestions). Validate ids against the id pattern, strip control characters and XML-like tags, and cap the length.
 - `load`'s `body` and `read`'s `text` are returned verbatim. Treat them as third-party text.
 - Size limits: 512 files and 16 MiB per skill; 256 KiB per served resource; a scan stops at depth 6 or 20,000 entries.
 
@@ -40,7 +40,7 @@ This file is the single source of truth for security in this repository. Other d
 - `sources sync` on a GitHub source contacts GitHub. A command source runs its configured program, which can do whatever that program does.
 - `load` returns `base`, the absolute path of the skill directory on the server's machine, into the agent's context. Keep that in mind before you share a transcript.
 
-## HTTP service
+## HTTP entry point
 
 The [HTTP entry point](README.md#install-and-run) (`src/http.ts`) is the only network surface.
 
@@ -48,7 +48,8 @@ The [HTTP entry point](README.md#install-and-run) (`src/http.ts`) is the only ne
 - Requests whose `Host` header, or browser `Origin`, names a host other than the listen address are refused. This blocks DNS rebinding.
 - Traffic is plain HTTP. Encryption relies on the private network, such as Tailscale.
 - Bind only to loopback or to a private network address that you control. Never bind to a public address.
-- Changes to the exposure are recorded in [docs/decisions.md](docs/decisions.md).
+- Do not enable Tailscale Funnel until bearer tokens and a configurable Host allowlist exist. The accepted design is [ADR-0018](docs/adr/0018-serve-cloud-agents-through-tailscale-funnel.md).
+- Changes to the exposure are recorded in [docs/adr/](docs/adr/).
 
 ## Reporting a vulnerability
 
@@ -56,8 +57,9 @@ Report it privately through GitHub's [private vulnerability reporting](https://d
 
 ## Security updates
 
-- **Version updates:** Dependabot checks weekly, as set in [`.github/dependabot.yml`](.github/dependabot.yml). Minor and patch updates arrive as one pull request. Each major update arrives as its own pull request. A new release waits 3 days before Dependabot proposes it, by default.
+- **Version updates:** Dependabot checks the `bun` ecosystem weekly, as set in [`.github/dependabot.yml`](.github/dependabot.yml). Minor and patch updates arrive as one pull request. Each major update arrives as its own pull request. `@types/bun` is excluded: it moves only with the Bun upgrade. A new release waits 3 days before Dependabot proposes it, by default.
 - **Security updates:** Dependabot opens one pull request per vulnerable dependency, including those in `bun.lock`. Security updates do not wait for the cooldown.
+- **Repository settings:** verified 2026-11-07, Dependabot alerts, Dependabot security updates and private vulnerability reporting are enabled. `.github/dependabot.yml` takes effect only once it is merged to the default branch, `main`. See the [Dependabot security updates](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-security-updates) docs.
 - **Gate:** every update pull request must pass `bun run verify:all` before it is merged. The repository has no CI workflow, so the run is manual.
-- **Bun runtime:** Dependabot updates dependencies, not the Bun pin. A Bun upgrade is a manual change, described in [coding standards, Dependencies](docs/coding-standards.md#dependencies).
-- Enabling Dependabot alerts and security updates is a repository setting. See the [Dependabot security updates](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-security-updates) docs.
+- **Bun runtime:** Dependabot does not change the Bun pin. Check the Bun version monthly, and on any Bun security release. The upgrade steps are in [coding standards, Dependencies](docs/coding-standards.md#dependencies).
+- **VPS:** `unattended-upgrades` applies Ubuntu security updates daily, and the VPS reboots at 01:00 Brasília time only when a reboot is required. Bun is excluded from automatic upgrades. See [ADR-0019](docs/adr/0019-apply-vps-security-updates-daily.md).

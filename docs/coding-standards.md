@@ -52,6 +52,12 @@ The fixed cost is a budget, enforced by `bun run budget`.
 ## Dependencies
 
 - Pin each dependency in `package.json` to one exact version, with no `^` or `~`. Add one with `bun add --exact <package>`, and commit the `bun.lock` it produces.
-- Bun is pinned in `packageManager` and `engines.bun`, and every machine that runs this code installs that exact version. Keep `@types/bun` at the same version as the Bun runtime.
+- Bun is pinned in `packageManager` and `engines.bun`, and every machine that runs this code installs that exact version. Keep `@types/bun` at the same version as the Bun runtime. `bun run verify:all` fails when they disagree.
 - Git 2.49 or newer is required on any machine that syncs a pinned GitHub source. The requirement is in [README, Install and run](../README.md#install-and-run).
 - Updates arrive as described in [SECURITY.md](../SECURITY.md#security-updates).
+- **Bun upgrade.** Check monthly, and on any Bun security release:
+  1. Set `packageManager`, `engines.bun` and `@types/bun` in `package.json` to the new version, run `bun install`, and commit `bun.lock`.
+  2. On the Mac, run `bun upgrade`, which installs the newest release. If the new version is older than that, run `npm install -g bun@<version>` instead.
+  3. On the VPS, run `npm install -g bun@<version>`.
+  4. Run `bun run verify:all`. It exits 0 only when the running Bun matches the pin.
+  5. Restart the service on the VPS: `sudo systemctl restart skills-mcp`.
