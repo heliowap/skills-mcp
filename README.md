@@ -187,12 +187,14 @@ The server speaks MCP over stdio. A harness starts it, so you normally do not ru
 **Run as a service**
 
 ```sh
-SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 bun src/http.ts
+SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 SKILLS_MCP_TOKEN_HASHES=mac:<sha256-hex> bun src/http.ts
 ```
 
 `src/http.ts` serves the same server over MCP Streamable HTTP at `/mcp`, so one long-lived process can serve harnesses on other machines. It builds a fresh server instance for each request. On startup it writes `listening on <url>` to stderr.
 
-- `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. Harnesses must use the address itself in the URL: a name that resolves to it, such as a Tailscale MagicDNS name, is refused too. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
+- Every request needs a bearer token. `SKILLS_MCP_TOKEN_HASHES` is required: it holds one `origin:sha256-hex` pair per harness. The service refuses to start without it. How to generate a token and its hash, and how to revoke one, is in [SECURITY.md](SECURITY.md#http-entry-point).
+- `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
+- `SKILLS_MCP_ALLOWED_HOSTS` lists the other Host names the service accepts, comma-separated, such as a Tailscale MagicDNS name for a service that listens on loopback behind `tailscale serve`. Unset, it is the listen address alone. The same list governs the `Origin` check.
 - `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
 - Choose the listen address by the bind rule in [SECURITY.md](SECURITY.md#http-entry-point).
 
@@ -209,7 +211,7 @@ User=<user>
 WorkingDirectory=<repo>
 Environment=SKILLS_MCP_HOST=<address>
 Environment=SKILLS_MCP_PORT=7337
-EnvironmentFile=-/home/<user>/.config/skills-mcp/env
+EnvironmentFile=/home/<user>/.config/skills-mcp/env
 ExecStart=<bun> src/http.ts
 Restart=on-failure
 RestartSec=5
@@ -227,7 +229,7 @@ journalctl -u skills-mcp -f     # the stderr diagnostics
 ```
 
 - At boot, a private address such as a Tailscale one can appear after the service starts. The bind then fails with `cannot start: listen on <address>:<port>`, and `Restart=on-failure` retries every 5 seconds until the address exists.
-- The `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`. Make it readable only by `<user>`: `sudo chown <user>: <file> && sudo chmod 600 <file>`. The `-` prefix makes it optional, so a missing or misnamed file is silent: the server then starts without a decision model and `find` ranks without it.
+- The `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`, and the token hashes, `SKILLS_MCP_TOKEN_HASHES=...`. It holds hashes, never tokens. Make it readable only by `<user>`: `sudo chown <user>: <file> && sudo chmod 600 <file>`. The file is required, because the service refuses to start without its token hashes. A missing or misnamed file therefore stops the service with `cannot start`, which names the variable. A missing decision-model key alone is not an error: the server then starts without a decision model and `find` ranks without it.
 
 ## Connect a harness
 
@@ -250,7 +252,7 @@ Replace `<repo>` with the absolute path of your checkout.
 
 Code Mode then exposes `tools.skills.find`, `tools.skills.load`, `tools.skills.read` and `tools.skills.sources`. The server's instructions tell the agent to call `find` first.
 
-To use a server running as a service, point OpenCode at its URL instead. The server has no OAuth, so turn OAuth off:
+To use a server running as a service, point OpenCode at its URL instead. The server has no OAuth, so turn OAuth off. Each harness sends its own token, read from its environment variable `SKILLS_MCP_TOKEN` rather than written into the config file. The token is given to one harness only; see [SECURITY.md](SECURITY.md#http-entry-point):
 
 ```jsonc
 {
@@ -259,7 +261,10 @@ To use a server running as a service, point OpenCode at its URL instead. The ser
       "skills": {
         "type": "remote",
         "url": "http://<address>:7337/mcp",
-        "oauth": false
+        "oauth": false,
+        "headers": {
+          "Authorization": "Bearer {env:SKILLS_MCP_TOKEN}"
+        }
       }
     }
   }
@@ -292,6 +297,8 @@ The `env` block is optional. Check your harness's documentation for its exact fi
 | Cache of synced sources | `~/.cache/skills-mcp` | `SKILLS_MCP_CACHE` |
 | HTTP listen address (service only) | `127.0.0.1` | `SKILLS_MCP_HOST` |
 | HTTP listen port (service only) | `7337` | `SKILLS_MCP_PORT` |
+| HTTP bearer token hashes (service only, required) | none; the service refuses to start | `SKILLS_MCP_TOKEN_HASHES` |
+| HTTP accepted Host names (service only) | the listen address | `SKILLS_MCP_ALLOWED_HOSTS` |
 
 A missing config file means no sources and the defaults. `sources add` creates the file when it is missing. Tests point both variables at temporary directories.
 
