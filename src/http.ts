@@ -7,9 +7,12 @@ import { messageOf } from "./text";
 
 /** The one path that serves MCP; every other path is 404. */
 export const MCP_PATH = "/mcp";
+/** Listen address when `SKILLS_MCP_HOST` is unset: loopback. */
 export const DEFAULT_HOST = "127.0.0.1";
+/** Listen port when `SKILLS_MCP_PORT` is unset. */
 export const DEFAULT_PORT = 7337;
-const MAX_PORT = 65535;
+/** The highest TCP port. */
+export const MAX_PORT = 65535;
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 
 /** An invalid listen setting. The message names the environment variable. */
@@ -20,7 +23,7 @@ export class ListenError extends Error {
   }
 }
 
-/** Where the HTTP server listens. Clients must send this hostname in their Host header. */
+/** Where the HTTP server listens. Harnesses must send this hostname in their Host header. */
 export interface Listen {
   hostname: string;
   port: number;
@@ -30,7 +33,7 @@ export interface Listen {
 export function listenFromEnv(env: Record<string, string | undefined> = process.env): Listen {
   const hostname = env.SKILLS_MCP_HOST ?? DEFAULT_HOST;
   if (hostname === "" || WILDCARD_HOSTS.has(hostname)) {
-    throw new ListenError(`SKILLS_MCP_HOST must be the address clients connect to, not "${hostname}"`);
+    throw new ListenError(`SKILLS_MCP_HOST must be the address harnesses connect to, not "${hostname}"`);
   }
   const rawPort = env.SKILLS_MCP_PORT;
   if (rawPort === undefined) return { hostname, port: DEFAULT_PORT };
@@ -78,6 +81,13 @@ if (import.meta.main) {
     process.exit(1);
   }
   for (const warning of app.warnings()) process.stderr.write(`skills-mcp: ${warning}\n`);
-  const server = serveHttp(app, listen);
+  let server: ReturnType<typeof serveHttp>;
+  try {
+    server = serveHttp(app, listen);
+  } catch (err) {
+    // Bun reports any bind failure as "port in use"; name the address, which at boot may not exist yet.
+    process.stderr.write(`skills-mcp: cannot start: listen on ${listen.hostname}:${listen.port}: ${messageOf(err)}\n`);
+    process.exit(1);
+  }
   process.stderr.write(`skills-mcp: listening on ${new URL(MCP_PATH, server.url).href}\n`);
 }

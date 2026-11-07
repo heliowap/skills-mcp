@@ -202,7 +202,7 @@ SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 bun src/http.ts
 
 `src/http.ts` serves the same server over MCP Streamable HTTP at `/mcp`, so one long-lived process can serve harnesses on other machines. It builds a fresh server instance for each request. On startup it writes `listening on <url>` to stderr.
 
-- `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address clients connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
+- `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. Harnesses must use the address itself in the URL: a name that resolves to it, such as a Tailscale MagicDNS name, is refused too. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
 - `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
 - The HTTP server has no authentication. Bind it to loopback or a private network address, such as a Tailscale address, and never to a public one. See [Security and privacy](#security-and-privacy).
 
@@ -220,7 +220,7 @@ WorkingDirectory=<repo>
 Environment=SKILLS_MCP_HOST=<address>
 Environment=SKILLS_MCP_PORT=7337
 EnvironmentFile=-/home/<user>/.config/skills-mcp/env
-ExecStart=/usr/bin/bun src/http.ts
+ExecStart=<bun> src/http.ts
 Restart=on-failure
 RestartSec=5
 
@@ -228,7 +228,16 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-The optional `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`, readable only by `<user>`.
+Replace `<bun>` with the absolute path that `command -v bun` prints for `<user>`. Save the unit as `/etc/systemd/system/skills-mcp.service`, then enable it, which is what makes it start at boot:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now skills-mcp
+journalctl -u skills-mcp -f     # the stderr diagnostics
+```
+
+- At boot, a private address such as a Tailscale one can appear after the service starts. The bind then fails with `cannot start: listen on <address>:<port>`, and `Restart=on-failure` retries every 5 seconds until the address exists.
+- The `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`. Make it readable only by `<user>`: `sudo chown <user>: <file> && sudo chmod 600 <file>`. The `-` prefix makes it optional, so a missing or misnamed file is silent: the server then starts without a decision model and `find` ranks without it.
 
 ## Connect a harness
 
@@ -563,7 +572,7 @@ Read these before changing code:
 - **No cross-process lock.** The server serializes its own source changes, but the CLI and a running server each write the config file without a lock. Do not run both at the same moment.
 - **Git sees your environment.** See [Security and privacy](#security-and-privacy).
 - **Remote paths.** Served over HTTP from another machine, `load` still returns `base` as a path on the server's machine. The agent can fetch `SKILL.md` and the listed resources through `read`, but a skill that tells it to run a script by path finds no such file locally.
-- **No change notice over HTTP.** Each HTTP request gets its own server instance, so no resource-list change is sent after a rebuild. A client sees the new catalog on its next request.
+- **No change notice over HTTP.** Each HTTP request gets its own server instance, so no resource-list change is sent after a rebuild. A harness sees the new catalog on its next request.
 - **The fixed-cost figure is an estimate.** It depends on OpenCode's renderer as ported at `e23d54ca`. Re-run `bun run budget` after OpenCode changes how it renders tools.
 
 ## License

@@ -3,14 +3,22 @@ import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/server";
 import { rm } from "node:fs/promises";
 import { type App, createApp } from "../../src/app";
 import { DEFAULT_HOST, DEFAULT_PORT, ListenError, listenFromEnv, MCP_PATH, serveHttp } from "../../src/http";
-import { CHILD_TIMEOUT_MS, childEnv, makeSandbox, REPO_ROOT, type ToolResult, useSandbox } from "./helpers";
+import {
+  CHILD_TIMEOUT_MS,
+  childEnv,
+  makeSandbox,
+  REPO_ROOT,
+  type RpcError,
+  type ToolResult,
+  useSandbox,
+} from "./helpers";
 
 interface RpcReply<T> {
   result?: T;
-  error?: { code: number; message: string };
+  error?: RpcError;
 }
 
-/** Posts one JSON-RPC request the way a stateless streamable HTTP client does; reads a JSON or SSE answer. */
+/** Posts one JSON-RPC request the way a stateless streamable HTTP harness does; reads a JSON or SSE answer. */
 async function rpc<T>(url: string, method: string, params: unknown = {}, headers: Record<string, string> = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -173,6 +181,24 @@ describe("HTTP entry point: spawned as a service manager would run it", () => {
     } finally {
       child.kill();
       await child.exited;
+      await rm(sandbox.root, { recursive: true, force: true });
+    }
+  });
+
+  test("an address this machine does not have exits 1 with a cannot-start line naming it", async () => {
+    const sandbox = await makeSandbox();
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737): never assigned to a local interface.
+    const child = Bun.spawn(["bun", "src/http.ts"], {
+      cwd: REPO_ROOT,
+      env: { ...childEnv(sandbox), SKILLS_MCP_HOST: "192.0.2.1", SKILLS_MCP_PORT: "0" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: CHILD_TIMEOUT_MS,
+    });
+    try {
+      expect(await child.exited).toBe(1);
+      expect(await new Response(child.stderr).text()).toMatch(/skills-mcp: cannot start: .*192\.0\.2\.1/);
+    } finally {
       await rm(sandbox.root, { recursive: true, force: true });
     }
   });
