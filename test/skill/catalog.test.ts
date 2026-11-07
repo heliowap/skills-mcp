@@ -12,7 +12,12 @@ const repo = (name: string) => join(REPOS, name);
 const isRoot = () => typeof process.getuid === "function" && process.getuid() === 0;
 
 const made: string[] = [];
+// Writes still running when a test ends. A test that times out leaves its writes going,
+// so cleanup waits for them before it removes anything.
+const writing = new Set<Promise<unknown>>();
 afterEach(async () => {
+  await Promise.allSettled(writing);
+  writing.clear();
   for (const dir of made.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -20,11 +25,15 @@ afterEach(async () => {
 async function tree(files: Record<string, string | Uint8Array>): Promise<string> {
   const base = await realpath(await mkdtemp(join(tmpdir(), "skills-p1-")));
   made.push(base);
-  for (const [rel, data] of Object.entries(files)) {
-    const abs = join(base, rel);
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, data);
-  }
+  const write = (async () => {
+    for (const [rel, data] of Object.entries(files)) {
+      const abs = join(base, rel);
+      await mkdir(dirname(abs), { recursive: true });
+      await writeFile(abs, data);
+    }
+  })();
+  writing.add(write);
+  await write;
   return base;
 }
 
@@ -436,6 +445,9 @@ describe("buildCatalog: path containment and limits", () => {
 });
 
 describe("buildCatalog: resource and failure limits", () => {
+  // The fixture writes MAX_SCAN_ENTRIES + 2 files one at a time: about 3 s on the author's Mac and
+  // longer on the slower VPS (Ubuntu 24.04 x86_64), past Bun's 5 s default. 60 s leaves room for a
+  // slow disk; a real hang still fails.
   test("a walk stops after MAX_SCAN_ENTRIES entries and warns, keeping what it read", async () => {
     const files: Record<string, string> = { "aaa/SKILL.md": skillMd("aaa", "Read before the cap.") };
     for (let i = 0; i <= MAX_SCAN_ENTRIES; i++) files[`zzz/f${i}.txt`] = "";
@@ -444,7 +456,7 @@ describe("buildCatalog: resource and failure limits", () => {
 
     expect(catalog.get("aaa")).toBeDefined();
     expect(warned(warnings, String(MAX_SCAN_ENTRIES))).toBe(true);
-  });
+  }, 60_000);
 
   test.skipIf(isRoot())("an unreadable SKILL.md is skipped with a warning instead of failing the build", async () => {
     const base = await tree({
