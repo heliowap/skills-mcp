@@ -64,12 +64,7 @@ The **catalog** merges all sources into one skill per **skill id**, which is the
 
 ### Trusted and untrusted sources
 
-Every skill, resource and source is data. The server reads skill files and never runs them.
-
-- A **local source** is **trusted**: its top-level symlinks may point outside it.
-- A **GitHub source** and a **command source** are **untrusted**: every path is resolved with `realpath` and must stay inside its skill directory.
-
-Who may add or remove sources is covered in [Tools](#tools) and [Security and privacy](#security-and-privacy).
+A **local source** is **trusted**. A **GitHub source** and a **command source** are **untrusted**. The rules are in [SECURITY.md](SECURITY.md#trusted-and-untrusted-sources).
 
 ### Finding a skill
 
@@ -98,12 +93,7 @@ On fallback, `find` still returns lexical candidates, so the agent is never left
 
 ### Code Mode and the fixed cost
 
-The text the server adds to every model step is kept small:
-
-- Every tool declares an `outputSchema`, so Code Mode shows a typed return, and the schemas are shallow.
-- The first line of each tool description is at most 120 characters and is self-sufficient.
-- The server instructions are one line: `Call find before non-trivial work; load the suggested skill.`
-- Input schemas carry no length limits, because OpenCode would print each one. The handlers enforce the limits instead.
+The rules that keep the text the server adds to every model step small are in [docs/coding-standards.md](docs/coding-standards.md#mcp-surface).
 
 `bun run budget` renders the tools and instructions the way OpenCode prints them, and fails above 320 tokens.
 
@@ -204,7 +194,7 @@ SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 bun src/http.ts
 
 - `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address harnesses connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. Harnesses must use the address itself in the URL: a name that resolves to it, such as a Tailscale MagicDNS name, is refused too. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
 - `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
-- The HTTP server has no authentication. Bind it to loopback or a private network address, such as a Tailscale address, and never to a public one. See [Security and privacy](#security-and-privacy).
+- Bind it to loopback or a private network address, such as a Tailscale address, and never to a public one. Its exposure is described in [SECURITY.md](SECURITY.md#http-service).
 
 A systemd unit that runs it as a user, restarts it after a crash and starts it at boot:
 
@@ -390,7 +380,7 @@ A trained ranker scores the catalog with weights learned offline from example ta
 - **Staleness.** A change to any `SKILL.md` in the catalog makes the trained ranker stale. The server then stops using it, reports a warning and ranks lexically, until `teach` and `train` run again.
 - **Results.** The measured numbers and the target comparison are in [docs/eval.md](docs/eval.md#trained-ranker).
 
-Keys are read from the environment by name when the server starts. They never go in the config file.
+Keys are read from the environment when the server starts, never from the config file. See [SECURITY.md](SECURITY.md#keys-and-logs).
 
 With no usable key the server still starts. `find` falls back as described above (`trained-fallback` or `bm25-fallback`), and `reason` names the variable to set:
 
@@ -515,50 +505,15 @@ docs/             plan, evaluation results, cutover runbook, coding standards
 Read these before changing code:
 
 - [AGENTS.md](AGENTS.md): English for every file, and the glossary terms.
-- [docs/coding-standards.md](docs/coding-standards.md): module boundaries, the rules for untrusted content, the MCP surface, and TypeScript style.
+- [docs/coding-standards.md](docs/coding-standards.md): module boundaries, the MCP surface, dependencies and TypeScript style.
+- [SECURITY.md](SECURITY.md): trusted sources, untrusted content, keys and the HTTP service.
 - [GLOSSARY.md](GLOSSARY.md): the domain terms.
 
-**Tests stay offline.** They use stub decision models, local bare git repositories and fake CLI scripts. The config and cache point at temporary directories through `SKILLS_MCP_CONFIG` and `SKILLS_MCP_CACHE`, so tests never read your configuration. Live tests run only when their credentials are set: `test/decision/live.test.ts` needs a TypeSafe key, and the command-source live test needs `SKILLS_MCP_LIVE_CLI`.
+**Tests stay offline** by the rules in [docs/coding-standards.md](docs/coding-standards.md#tests). Live tests run only when their credentials are set: `test/decision/live.test.ts` needs a TypeSafe key, and the command-source live test needs `SKILLS_MCP_LIVE_CLI`.
 
 ## Security and privacy
 
-**Untrusted content**
-
-- Every skill, resource and source is data. The server reads and returns text. It never executes a file from a skill.
-- Every path is resolved with `realpath` and must stay inside its skill directory. `read` checks containment before it serves a file. The one exception is a local source's top-level symlinks, which are trusted.
-- Names and descriptions shown to the agent are validated and sanitized: control characters and XML-like tags are removed, and length is capped.
-- `load`'s `body` and `read`'s `text` are returned verbatim. They are untrusted skill content, and the harness should treat them as third-party text.
-- Size limits: 512 files and 16 MiB per skill; 256 KiB per served resource; a scan stops at depth 6 or 20,000 entries.
-
-**Who may add sources**
-
-- Local and command sources come only from the config file or the admin CLI.
-- Agents may add and remove GitHub sources through the `sources` tool.
-- A command source runs a program, so only you add one.
-
-**Processes and environment**
-
-- Commands start from an argument array, with a timeout and an output cap. No shell is involved.
-- Command sources get an allowlisted environment: `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`, `USER` and `SHELL`. API keys are not passed to them.
-- Git runs with `GIT_TERMINAL_PROMPT=0` and without the repository override variables. Git otherwise inherits the server's environment, so API keys are visible to git. Git does not use them.
-
-**Keys and logs**
-
-- Keys are read by name from the environment at startup. They do not appear in the config file, logs, errors or tool output. Errors name the variable, never its value.
-- Diagnostics go to stderr. Tool errors reach the agent as one sanitized line, and the same sanitized line is written to stderr.
-
-**What leaves your machine**
-
-- `find` with no decision model sends nothing.
-- `find` with a decision model sends the task text, the skill ids and descriptions (each cut to a character budget), and, for the three shortlisted skills, the first 700 characters of their bodies. `typesafe-ai` entries send this to the TypeSafe AI API (`https://api.typesafe.ai/v1`); `gateway` entries send it through the AI SDK gateway. Resources, full bodies, paths, the config file and keys are not sent.
-- `sources sync` on a GitHub source contacts GitHub. A command source runs its configured program, which can do whatever that program does.
-- `load` returns `base`, the absolute path of the skill directory on your machine, into the agent's context. Keep that in mind before you share a transcript.
-
-**HTTP service**
-
-- `src/http.ts` has no authentication. Anyone who can reach its address can call every tool, including `sources add`, `sync` and `remove` on GitHub sources. Bind it to loopback or a private network you control.
-- Requests whose `Host` header, or browser `Origin`, names a host other than `SKILLS_MCP_HOST` are refused, so a web page cannot reach the server through DNS rebinding.
-- Traffic is plain HTTP. Rely on the private network, such as Tailscale, for encryption.
+Security is documented in [SECURITY.md](SECURITY.md): the threat model, trusted and untrusted sources, key handling, what leaves your machine, the HTTP service, how to report a vulnerability, and how security updates arrive.
 
 ## Limitations and known issues
 
