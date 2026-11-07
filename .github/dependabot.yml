@@ -1,0 +1,16 @@
+# Weekly Bun updates. Security updates are sent per vulnerable dependency and are
+# enabled in the repository settings, not here.
+version: 2
+updates:
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
