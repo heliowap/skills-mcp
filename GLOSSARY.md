@@ -179,5 +179,5 @@ _Avoid_: Bind address, IP, host
 ## Records
 
 **Decision record**:
-An entry in `docs/decisions.md` that states one decision with its date, status, context and consequences.
+A file in `docs/adr/` that states one decision with its status, date, context and consequences.
 _Avoid_: Decision log, changelog
