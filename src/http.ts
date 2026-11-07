@@ -21,8 +21,10 @@ export const TOKEN_HASHES_ENV = "SKILLS_MCP_TOKEN_HASHES";
 export const ALLOWED_HOSTS_ENV = "SKILLS_MCP_ALLOWED_HOSTS";
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
-/** A JSON-RPC method is logged only when it has this shape, so a hostile one cannot forge a log line. */
-const LOGGABLE_METHOD = /^[A-Za-z0-9_./-]{1,100}$/;
+/** Longest JSON-RPC method name written to stderr. */
+const MAX_LOGGED_METHOD_CHARS = 100;
+/** A method is logged only in this shape, so a hostile one cannot forge a log line. */
+const LOGGABLE_METHOD = new RegExp(`^[A-Za-z0-9_./-]{1,${MAX_LOGGED_METHOD_CHARS}}$`);
 
 /** An invalid listen setting. The message names the environment variable. */
 export class ListenError extends Error {
@@ -92,12 +94,15 @@ export function tokenHashesFromEnv(env: Record<string, string | undefined> = pro
     const origin = entry.slice(0, colon);
     if (!isSegment(origin)) {
       throw new AccessError(
-        `${TOKEN_HASHES_ENV} entry ${index + 1} has an origin name that must be lowercase letters, digits and single hyphens`,
+        `${TOKEN_HASHES_ENV} entry ${index + 1} has an origin name that must be lowercase letters, ` +
+          "digits and single hyphens",
       );
     }
     const hex = entry.slice(colon + 1);
     if (!SHA256_HEX.test(hex)) {
-      throw new AccessError(`${TOKEN_HASHES_ENV} origin "${origin}" has a malformed hash: expected 64 hex characters`);
+      throw new AccessError(
+        `${TOKEN_HASHES_ENV} origin "${origin}" has a malformed hash: expected 64 hex characters`,
+      );
     }
     if (seen.has(origin)) {
       throw new AccessError(`${TOKEN_HASHES_ENV} origin "${origin}" appears more than once`);
@@ -127,17 +132,17 @@ function bearerToken(header: string | null): string | undefined {
 }
 
 /**
- * The origin whose token hash matches the presented token, or undefined. Every configured hash is
- * compared, in constant time, so the answer does not depend on which hash is close.
+ * The configured origin whose hash matches the presented token, or undefined. Every hash is compared
+ * in constant time, and the loop never stops early: an early exit would reveal how close a guess came.
  */
-function originOf(presented: string | undefined, tokens: TokenHash[]): { origin: string; digest: Buffer } | undefined {
+function originOf(presented: string | undefined, tokens: TokenHash[]): TokenHash | undefined {
   if (presented === undefined) return undefined;
   const digest = createHash("sha256").update(presented).digest();
-  let matched: string | undefined;
+  let matched: TokenHash | undefined;
   for (const token of tokens) {
-    if (timingSafeEqual(digest, token.digest) && matched === undefined) matched = token.origin;
+    if (timingSafeEqual(digest, token.digest) && matched === undefined) matched = token;
   }
-  return matched === undefined ? undefined : { origin: matched, digest };
+  return matched;
 }
 
 function unauthorized(): Response {
@@ -174,7 +179,9 @@ export function serveHttp(app: App, listen: Listen, access: HttpAccess) {
     idleTimeout: 0,
     async fetch(request) {
       if (new URL(request.url).pathname !== MCP_PATH) return new Response("Not found", { status: 404 });
-      const refused = hostHeaderValidationResponse(request, access.allowedHosts) ?? originValidationResponse(request, access.allowedHosts);
+      const refused =
+        hostHeaderValidationResponse(request, access.allowedHosts) ??
+        originValidationResponse(request, access.allowedHosts);
       if (refused) return refused;
       const matched = originOf(bearerToken(request.headers.get("authorization")), access.tokens);
       if (matched === undefined) return unauthorized();
