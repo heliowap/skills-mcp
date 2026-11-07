@@ -1,5 +1,5 @@
-# Weekly Bun updates. Security updates are sent per vulnerable dependency and are
-# enabled in the repository settings, not here.
+# Weekly updates for Bun packages and GitHub Actions. Security updates are sent per vulnerable
+# dependency and are enabled in the repository settings, not here.
 version: 2
 updates:
   - package-ecosystem: "bun"
@@ -17,3 +17,8 @@ updates:
         update-types:
           - "minor"
           - "patch"
+  # Keeps the SHA pins in .github/workflows/ci.yml current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -55,6 +55,7 @@ The fixed cost is a budget, enforced by `bun run budget`.
 - Bun is pinned in `packageManager` and `engines.bun`, and every machine that runs this code installs that exact version. Keep `@types/bun` at the same version as the Bun runtime. `bun run verify:all` fails when they disagree.
 - Git 2.49 or newer is required on any machine that syncs a pinned GitHub source. The requirement is in [README, Install and run](../README.md#install-and-run).
 - Updates arrive as described in [SECURITY.md](../SECURITY.md#security-updates).
+- **Update gate.** An update pull request merges only when the `verify` check in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is green. The check runs on every pull request and on every push to `main`, with the Bun version read from `package.json`.
 - **Bun upgrade.** Check monthly, and on any Bun security release:
   1. Set `packageManager`, `engines.bun` and `@types/bun` in `package.json` to the new version, run `bun install`, and commit `bun.lock`.
   2. On the Mac, run `bun upgrade`, which installs the newest release. If the new version is older than that, run `npm install -g bun@<version>` instead.
