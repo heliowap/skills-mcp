@@ -6,6 +6,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Moves only with the Bun upgrade process: docs/coding-standards.md#dependencies.
+    ignore:
+      - dependency-name: "@types/bun"
     groups:
       minor-and-patch:
         applies-to: version-updates
