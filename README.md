@@ -211,6 +211,7 @@ User=<user>
 WorkingDirectory=<repo>
 Environment=SKILLS_MCP_HOST=<address>
 Environment=SKILLS_MCP_PORT=7337
+Environment=SKILLS_MCP_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
 EnvironmentFile=/home/<user>/.config/skills-mcp/env
 ExecStart=<bun> src/http.ts
 Restart=on-failure
@@ -228,6 +229,7 @@ sudo systemctl enable --now skills-mcp
 journalctl -u skills-mcp -f     # the stderr diagnostics
 ```
 
+- `SKILLS_MCP_ALLOWED_HOSTS` in the unit names this machine's `<machine>.<tailnet>.ts.net` host. `tailscale serve` and Funnel forward that name as the Host header, so without it the service refuses those requests with `403`. The same name can instead go in the `EnvironmentFile`.
 - At boot, a private address such as a Tailscale one can appear after the service starts. The bind then fails with `cannot start: listen on <address>:<port>`, and `Restart=on-failure` retries every 5 seconds until the address exists.
 - The `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`, and the token hashes, `SKILLS_MCP_TOKEN_HASHES=...`. It holds hashes, never tokens. Make it readable only by `<user>`: `sudo chown <user>: <file> && sudo chmod 600 <file>`. The file is required, because the service refuses to start without its token hashes. A missing or misnamed file therefore stops the service with `cannot start`, which names the variable. A missing decision-model key alone is not an error: the server then starts without a decision model and `find` ranks without it.
 
@@ -261,7 +263,7 @@ Replace `<repo>` with the absolute path of your checkout.
 
 Code Mode then exposes `tools.skills.find`, `tools.skills.load`, `tools.skills.read` and `tools.skills.sources`. The server's instructions tell the agent to call `find` first.
 
-To use a server running as a service, point OpenCode at its URL instead. Behind `tailscale serve` or Funnel the URL is `https://<machine>.<tailnet>.ts.net/mcp`. The server has no OAuth, so turn OAuth off. Each harness sends its own token, read from its environment variable `SKILLS_MCP_TOKEN` rather than written into the config file. The token is given to one harness only; see [SECURITY.md](SECURITY.md#http-entry-point):
+To use a server running as a service, point OpenCode at its URL instead. Behind `tailscale serve` or Funnel the URL is `https://<machine>.<tailnet>.ts.net/mcp`. The server has no OAuth, so turn OAuth off. Each harness sends its own token, which the config file never holds. The token is given to one harness only; see [SECURITY.md](SECURITY.md#http-entry-point):
 
 ```jsonc
 {
@@ -272,13 +274,22 @@ To use a server running as a service, point OpenCode at its URL instead. Behind 
         "url": "http://<address>:7337/mcp",
         "oauth": false,
         "headers": {
-          "Authorization": "Bearer {env:SKILLS_MCP_TOKEN}"
+          "Authorization": "Bearer {file:~/.config/skills-mcp/mac-token}"
         }
       }
     }
   }
 }
 ```
+
+On the Mac, read the token from a file. OpenCode's background service does not inherit the shell environment, so `{env:SKILLS_MCP_TOKEN}` would expand to an empty string there. Write the token, with no trailing newline, to a file that only your user can read. `$TOKEN` is the token from [SECURITY.md](SECURITY.md#http-entry-point):
+
+```sh
+mkdir -p ~/.config/skills-mcp
+(umask 077 && printf '%s' "$TOKEN" > ~/.config/skills-mcp/mac-token)
+```
+
+OpenCode replaces `{file:...}` with the file's contents when it loads its config, and a missing file becomes an empty string. The `{file:...}` syntax is in the [OpenCode config docs](https://opencode.ai/docs/config/). If OpenCode is started from a shell, `"Bearer {env:SKILLS_MCP_TOKEN}"` works instead, and the token then stays out of every file.
 
 **Claude Code and Cursor** also read the token from `SKILLS_MCP_TOKEN` in their own config, so no token is written into a file. Claude Code expands `${VAR}` in `.mcp.json`, and Cursor expands `${env:VAR}` in `mcp.json`:
 
