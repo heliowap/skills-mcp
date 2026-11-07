@@ -194,6 +194,42 @@ bun start               # runs src/index.ts
 
 The server speaks MCP over stdio. A harness starts it, so you normally do not run it by hand. Run in a terminal, it simply waits for input. stdout carries MCP messages only; diagnostics go to stderr.
 
+**Run as a service**
+
+```sh
+SKILLS_MCP_HOST=100.64.0.1 SKILLS_MCP_PORT=7337 bun src/http.ts
+```
+
+`src/http.ts` serves the same server over MCP Streamable HTTP at `/mcp`, so one long-lived process can serve harnesses on other machines. It builds a fresh server instance for each request. On startup it writes `listening on <url>` to stderr.
+
+- `SKILLS_MCP_HOST` defaults to `127.0.0.1`. It must be the address clients connect to, because a request whose `Host` header names any other host is refused with `403`, and so is a browser `Origin` from any other host. That check blocks DNS rebinding. A wildcard address (`0.0.0.0`, `::`) is refused at startup.
+- `SKILLS_MCP_PORT` defaults to `7337`. `0` picks a free port.
+- The HTTP server has no authentication. Bind it to loopback or a private network address, such as a Tailscale address, and never to a public one. See [Security and privacy](#security-and-privacy).
+
+A systemd unit that runs it as a user, restarts it after a crash and starts it at boot:
+
+```ini
+[Unit]
+Description=skills-mcp
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=<user>
+WorkingDirectory=<repo>
+Environment=SKILLS_MCP_HOST=<address>
+Environment=SKILLS_MCP_PORT=7337
+EnvironmentFile=-/home/<user>/.config/skills-mcp/env
+ExecStart=/usr/bin/bun src/http.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The optional `EnvironmentFile` holds the decision-model key, for example `TYPESAFE_API_KEY=...`, readable only by `<user>`.
+
 ## Connect a harness
 
 Replace `<repo>` with the absolute path of your checkout.
@@ -214,6 +250,22 @@ Replace `<repo>` with the absolute path of your checkout.
 ```
 
 Code Mode then exposes `tools.skills.find`, `tools.skills.load`, `tools.skills.read` and `tools.skills.sources`. The server's instructions tell the agent to call `find` first.
+
+To use a server running as a service, point OpenCode at its URL instead. The server has no OAuth, so turn OAuth off:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "skills": {
+        "type": "remote",
+        "url": "http://<address>:7337/mcp",
+        "oauth": false
+      }
+    }
+  }
+}
+```
 
 **Any other MCP harness.** Register a stdio server whose command is `bun` and whose argument is the entry point. Key names differ between clients. This is the common shape:
 
@@ -239,6 +291,8 @@ The `env` block is optional. Check your harness's documentation for its exact fi
 |---|---|---|
 | Config file | `~/.config/skills-mcp/config.json` | `SKILLS_MCP_CONFIG` |
 | Cache of synced sources | `~/.cache/skills-mcp` | `SKILLS_MCP_CACHE` |
+| HTTP listen address (service only) | `127.0.0.1` | `SKILLS_MCP_HOST` |
+| HTTP listen port (service only) | `7337` | `SKILLS_MCP_PORT` |
 
 A missing config file means no sources and the defaults. `sources add` creates the file when it is missing. Tests point both variables at temporary directories.
 
@@ -491,6 +545,12 @@ Read these before changing code:
 - `sources sync` on a GitHub source contacts GitHub. A command source runs its configured program, which can do whatever that program does.
 - `load` returns `base`, the absolute path of the skill directory on your machine, into the agent's context. Keep that in mind before you share a transcript.
 
+**HTTP service**
+
+- `src/http.ts` has no authentication. Anyone who can reach its address can call every tool, including `sources add`, `sync` and `remove` on GitHub sources. Bind it to loopback or a private network you control.
+- Requests whose `Host` header, or browser `Origin`, names a host other than `SKILLS_MCP_HOST` are refused, so a web page cannot reach the server through DNS rebinding.
+- Traffic is plain HTTP. Rely on the private network, such as Tailscale, for encryption.
+
 ## Limitations and known issues
 
 - **No model, no suggestion.** Without `decision.model`, `find` returns candidates and a null suggestion. The lexical ranker cannot abstain.
@@ -502,7 +562,8 @@ Read these before changing code:
 - **Agent-added GitHub sources are limited.** The tool stores the default branch and the `skills` path. Pins and other paths need the config file or the CLI.
 - **No cross-process lock.** The server serializes its own source changes, but the CLI and a running server each write the config file without a lock. Do not run both at the same moment.
 - **Git sees your environment.** See [Security and privacy](#security-and-privacy).
-- **Stdio only.** The server has no HTTP transport.
+- **Remote paths.** Served over HTTP from another machine, `load` still returns `base` as a path on the server's machine. The agent can fetch `SKILL.md` and the listed resources through `read`, but a skill that tells it to run a script by path finds no such file locally.
+- **No change notice over HTTP.** Each HTTP request gets its own server instance, so no resource-list change is sent after a rebuild. A client sees the new catalog on its next request.
 - **The fixed-cost figure is an estimate.** It depends on OpenCode's renderer as ported at `e23d54ca`. Re-run `bun run budget` after OpenCode changes how it renders tools.
 
 ## License
