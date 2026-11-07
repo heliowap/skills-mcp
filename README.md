@@ -271,6 +271,33 @@ To use a server running as a service, point OpenCode at its URL instead. The ser
 }
 ```
 
+**Claude Code and Cursor** also read the token from `SKILLS_MCP_TOKEN` in their own config, so no token is written into a file. Claude Code expands `${VAR}` in `.mcp.json`, and Cursor expands `${env:VAR}` in `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "skills": {
+      "type": "http",
+      "url": "http://<address>:7337/mcp",
+      "headers": { "Authorization": "Bearer ${SKILLS_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+```json
+{
+  "mcpServers": {
+    "skills": {
+      "url": "http://<address>:7337/mcp",
+      "headers": { "Authorization": "Bearer ${env:SKILLS_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+Do not pass the token with `claude mcp add --header "Authorization: Bearer $SKILLS_MCP_TOKEN"`. The shell expands it before Claude Code runs, and the token is then written into the config file.
+
 **Any other MCP harness.** Register a stdio server whose command is `bun` and whose argument is the entry point. Key names differ between clients. This is the common shape:
 
 ```json

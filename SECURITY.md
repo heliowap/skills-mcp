@@ -5,7 +5,7 @@ This file is the single source of truth for security in this repository. Other d
 ## Threat model
 
 - **Adversary:** the author of a skill, of a GitHub repository, or of a command source's output. Their text reaches the agent's context.
-- **Adversary:** anyone who can reach the listen address of the [HTTP entry point](#http-entry-point), or the published Funnel address once it exists, without a valid bearer token.
+- **Adversary:** anyone who can reach the listen address of the [HTTP entry point](#http-entry-point), or any published address of it, without a valid bearer token.
 - **Assets:** the user's files and machine, the decision-model API keys, and what the agent does with the text it receives.
 - **Boundary:** the server never runs a skill file. It runs only the git and command programs that a source spec declares.
 

@@ -181,8 +181,12 @@ One harness that calls the HTTP entry point, identified by its name in `SKILLS_M
 _Avoid_: Client, caller, user
 
 **Bearer token**:
-The secret a harness sends as `Authorization: Bearer <token>`; the service keeps only its SHA-256 hash.
+The credential a harness sends as `Authorization: Bearer <token>`; the service keeps only its SHA-256 hash.
 _Avoid_: API key, password, secret
+
+**Host allowlist**:
+The Host names the HTTP entry point accepts, set by `SKILLS_MCP_ALLOWED_HOSTS`; the same list governs the browser `Origin` check.
+_Avoid_: Host list, allowed hosts, domain list
 
 ## Records
 

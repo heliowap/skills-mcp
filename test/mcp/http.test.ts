@@ -64,7 +64,17 @@ const TOKEN_HASHES = `mac:${MAC_HASH},cursor-cloud:${CURSOR_HASH}`;
 const MAC_AUTH = { authorization: `Bearer ${MAC_TOKEN}` };
 const CURSOR_AUTH = { authorization: `Bearer ${CURSOR_TOKEN}` };
 /** A tailnet-style name the service listens behind, which the Host allowlist adds. */
-const TS_NET_HOST = "vmi3689590.tail3eaee3.ts.net";
+const TS_NET_HOST = "skills.example.ts.net";
+
+/** The message of the error a call throws; fails the test when the call returns instead. */
+function thrownMessage(action: () => unknown): string {
+  try {
+    action();
+  } catch (err) {
+    return String(err);
+  }
+  throw new Error("expected the call to throw");
+}
 
 /** The access settings a service started with these variables would have; the listener is 127.0.0.1. */
 function accessFor(tokenHashes: string = TOKEN_HASHES, allowedHosts?: string): HttpAccess {
@@ -223,21 +233,30 @@ describe("HTTP server: bearer tokens", () => {
     expect(status).toBe(401);
   });
 
-  test("a Bearer header without a token is 401", async () => {
+  test.each(["Bearer", "Bearer a b", `Bearer  ${MAC_TOKEN}x y`])("a malformed Bearer header %p is 401", async (authorization) => {
     const url = await start(accessFor());
 
-    const { status } = await rpc(url, "initialize", INITIALIZE, { authorization: "Bearer" });
+    const { status } = await rpc(url, "initialize", INITIALIZE, { authorization });
 
     expect(status).toBe(401);
   });
 
-  test("an unknown token is 401, and the 401 body never echoes the presented token", async () => {
+  test("the Bearer scheme is matched without regard to case, as RFC 7235 allows", async () => {
+    const url = await start(accessFor());
+
+    const { status } = await rpc(url, "initialize", INITIALIZE, { authorization: `bearer ${MAC_TOKEN}` });
+
+    expect(status).toBe(200);
+  });
+
+  test("an unknown token is 401 with a Bearer challenge, and the 401 body never echoes the presented token", async () => {
     const url = await start(accessFor());
     const unknown = "c".repeat(64);
 
-    const { status, body } = await rpc(url, "initialize", INITIALIZE, { authorization: `Bearer ${unknown}` });
+    const { status, headers, body } = await rpc(url, "initialize", INITIALIZE, { authorization: `Bearer ${unknown}` });
 
     expect(status).toBe(401);
+    expect(headers.get("www-authenticate")).toBe("Bearer");
     expect(body).not.toContain(unknown);
   });
 
@@ -249,7 +268,7 @@ describe("HTTP server: bearer tokens", () => {
     expect(status).toBe(401);
   });
 
-  test("each configured origin's token is served, and only that origin's", async () => {
+  test("each configured origin's token is served", async () => {
     const url = await start(accessFor());
 
     const cursor = await rpc<{ serverInfo: { name: string } }>(url, "initialize", INITIALIZE, CURSOR_AUTH);
@@ -268,37 +287,26 @@ describe("tokenHashesFromEnv", () => {
 
   test("names the origin when its hash is malformed, and never echoes the hash", () => {
     const bad = "not-a-hash";
-    expect(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${bad}` })).toThrow(/origin "mac"/);
-    expect(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${bad}` })).toThrow(AccessError);
-    try {
-      tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${bad}` });
-    } catch (err) {
-      expect(String(err)).not.toContain(bad);
-    }
+    const message = thrownMessage(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${bad}` }));
+    expect(message).toMatch(/origin "mac"/);
+    expect(message).not.toContain(bad);
   });
 
   test("refuses a duplicate origin and names it", () => {
-    expect(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${MAC_HASH},mac:${CURSOR_HASH}` })).toThrow(/origin "mac"/);
+    const message = thrownMessage(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `mac:${MAC_HASH},mac:${CURSOR_HASH}` }));
+    expect(message).toMatch(/origin "mac" appears more than once/);
   });
 
   test("refuses an entry without an origin, without echoing the value", () => {
-    const raw = MAC_TOKEN;
-    expect(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: raw })).toThrow(/SKILLS_MCP_TOKEN_HASHES/);
-    try {
-      tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: raw });
-    } catch (err) {
-      expect(String(err)).not.toContain(raw);
-    }
+    const message = thrownMessage(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: MAC_TOKEN }));
+    expect(message).toMatch(/SKILLS_MCP_TOKEN_HASHES/);
+    expect(message).not.toContain(MAC_TOKEN);
   });
 
   test("refuses an origin that does not match the source-id pattern, without echoing it", () => {
-    const raw = `Mac_Token:${MAC_HASH}`;
-    expect(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: raw })).toThrow(/SKILLS_MCP_TOKEN_HASHES/);
-    try {
-      tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: raw });
-    } catch (err) {
-      expect(String(err)).not.toContain("Mac_Token");
-    }
+    const message = thrownMessage(() => tokenHashesFromEnv({ SKILLS_MCP_TOKEN_HASHES: `Mac_Token:${MAC_HASH}` }));
+    expect(message).toMatch(/SKILLS_MCP_TOKEN_HASHES/);
+    expect(message).not.toContain("Mac_Token");
   });
 });
 
@@ -318,11 +326,14 @@ describe("allowedHostsFromEnv", () => {
     ]);
   });
 
-  test("refuses an empty entry and names the variable", () => {
-    expect(() => allowedHostsFromEnv({ hostname: "127.0.0.1", port: 0 }, { SKILLS_MCP_ALLOWED_HOSTS: `127.0.0.1,,${TS_NET_HOST}` })).toThrow(
-      /SKILLS_MCP_ALLOWED_HOSTS/,
-    );
-  });
+  test.each([`127.0.0.1,,${TS_NET_HOST}`, `127.0.0.1,${TS_NET_HOST}/path`, `127.0.0.1,two words`])(
+    "refuses the malformed list %p and names the variable",
+    (list) => {
+      const listen = { hostname: "127.0.0.1", port: 0 };
+      expect(() => allowedHostsFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(AccessError);
+      expect(() => allowedHostsFromEnv(listen, { SKILLS_MCP_ALLOWED_HOSTS: list })).toThrow(/SKILLS_MCP_ALLOWED_HOSTS/);
+    },
+  );
 });
 
 describe("listenFromEnv", () => {
@@ -457,6 +468,8 @@ describe("HTTP entry point: spawned as a service manager would run it", () => {
       await rpc(url ?? "", "tools/list", {}, { authorization: `Bearer ${"d".repeat(64)}` });
       await rpc(url ?? "", "initialize", INITIALIZE, { authorization: `Basic ${MAC_TOKEN}` });
       await rpc(url ?? "", "tools/list", {}, { ...MAC_AUTH, host: "attacker.example" });
+      // A method with a line break must not forge a second log line.
+      await rpc(url ?? "", "tools/list\nskills-mcp: origin=forged", {}, MAC_AUTH);
     } finally {
       child.kill();
       await child.exited;
@@ -466,6 +479,8 @@ describe("HTTP entry point: spawned as a service manager would run it", () => {
 
     expect(stderr).toMatch(/origin=mac method=initialize/);
     expect(stderr).toMatch(/origin=cursor-cloud method=tools\/list/);
+    expect(stderr).toMatch(/origin=mac method=-\n/);
+    expect(stderr).not.toContain("origin=forged");
     expect(stderr).not.toContain(MAC_TOKEN);
     expect(stderr).not.toContain(CURSOR_TOKEN);
     expect(stderr).not.toContain(MAC_HASH);
