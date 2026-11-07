@@ -172,8 +172,8 @@ To add or remove local and command sources, use the [admin CLI](#admin-cli). The
 
 **Requirements**
 
-- **Bun.** The project is developed and tested on Bun 1.4.3. It uses Bun APIs (`Bun.spawn`, `Bun.YAML`).
-- **git** on your `PATH`, for GitHub sources.
+- **Bun 1.4.4**, the version pinned in `package.json` (`packageManager` and `engines.bun`). The project uses Bun APIs (`Bun.spawn`, `Bun.YAML`). Every machine that runs it, such as your Mac and the server, must install exactly this version.
+- **git 2.49 or newer** on your `PATH`, for GitHub sources (`git clone --revision`).
 - **A decision-model key**, optional. Without one, `find` still works and ranks lexically. See [Decision models](#decision-models).
 - **The `opencode` CLI**, only for `bun run coverage` and `bun run cutover verify`.
 
