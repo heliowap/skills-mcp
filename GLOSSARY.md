@@ -161,3 +161,23 @@ _Avoid_: Migration, rollout
 **Coverage**:
 The share of the harness's registered skills that the catalog can serve.
 _Avoid_: Completeness, parity
+
+## Deployment
+
+**HTTP entry point**:
+The file `src/http.ts`, which serves the MCP server over Streamable HTTP at `/mcp` for a long-lived service.
+_Avoid_: HTTP server, web server, remote entry
+
+**Service**:
+The long-lived systemd process that runs the HTTP entry point.
+_Avoid_: Daemon, unit, deployment
+
+**Listen address**:
+The address the HTTP entry point binds to, set by `SKILLS_MCP_HOST`; requests must name that address in their `Host` header.
+_Avoid_: Bind address, IP, host
+
+## Records
+
+**Decision record**:
+An entry in `docs/decisions.md` that states one decision with its date, status, context and consequences.
+_Avoid_: Decision log, changelog
