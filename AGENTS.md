@@ -13,3 +13,18 @@ instructions, and every Markdown file.
 - Touching security-relevant code (skill files, paths, processes, keys, the HTTP entry point): [SECURITY.md](SECURITY.md).
 - Naming a domain concept in code, docs or tool text: [GLOSSARY.md](GLOSSARY.md). Add a term there when one is settled.
 - Making or recording a design decision: [docs/adr/](docs/adr/).
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues at `heliowap/skills-mcp`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, default label strings (`needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the root + `docs/adr/`. See `docs/agents/domain.md`.
