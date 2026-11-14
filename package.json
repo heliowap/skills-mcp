@@ -21,9 +21,9 @@
     "verify:all": "bun run typecheck && bun test && bun run budget"
   },
   "dependencies": {
-    "@ai-sdk/typesafe-ai": "3.0.34",
+    "@ai-sdk/typesafe-ai": "3.0.38",
     "@modelcontextprotocol/server": "2.4.0",
-    "ai": "7.0.164",
+    "ai": "7.0.169",
     "zod": "4.6.7"
   },
   "devDependencies": {
